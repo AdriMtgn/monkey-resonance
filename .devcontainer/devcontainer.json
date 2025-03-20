@@ -1,0 +1,7 @@
+{
+  "name": "Python Dev Environment",
+  "dockerComposeFile": ["docker-compose.yml"],
+  "service": "devcontainer",
+  "workspaceFolder": "/base_app/app",
+  "shutdownAction": "stopCompose"
+}

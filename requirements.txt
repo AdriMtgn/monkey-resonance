@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+sounddevice
+numpy
+pipewire-python
+soundcard
+#pyaudio

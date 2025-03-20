@@ -1,0 +1,13 @@
+services:
+  devcontainer:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    volumes:
+      - ../app:/base_app/app
+      - ./in_container_options:/root/.vscode-server
+    command: ["tail", "-f", "/dev/null"]
+    ports:
+      - "80:80"
+    devices:
+      - "/dev/snd:/dev/snd"
