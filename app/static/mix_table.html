@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Mix Options</title>
+    <style>
+        .channel-controls {
+            margin-top: 10px;
+        }
+        .volume-control {
+            width: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div class="dropdown">
+        <select id="deviceSelect">
+            <option value="">Select a device</option>
+        </select>
+    </div>
+
+    <div id="channelControls"></div>
+
+    <audio id="idAudio" controls></audio>
+
+    <script>
+        const audioMixOptions = {
+            devices: [
+                {
+                    index: 0,
+                    name: "Device 1",
+                    channels: [
+                        {
+                            channel_number: 1,
+                            options: { volume: 0.5, is_muted: false }
+                        },
+                        {
+                            channel_number: 2,
+                            options: { volume: 0.7, is_muted: true }
+                        }
+                    ]
+                },
+                {
+                    index: 1,
+                    name: "Device 2",
+                    channels: [
+                        {
+                            channel_number: 1,
+                            options: { volume: 0.8, is_muted: false }
+                        }
+                    ]
+                }
+            ]
+        };
+
+        const deviceSelect = document.getElementById('deviceSelect');
+        const channelControls = document.getElementById('channelControls');
+        const audioElement = document.getElementById('idAudio');
+
+        const ws = new WebSocket("ws://localhost/ws");
+
+        ws.onopen = function(event) {
+            console.log("WebSocket connection opened");
+        };
+
+        ws.onmessage = function(event) {
+            console.log("Message from server:", event.data);
+            const audioData = JSON.parse(event.data);
+            if (audioData.type === 'audio') {
+                const audioBlob = new Blob([audioData.buffer], { type: 'audio/wav' });
+                audioElement.src = URL.createObjectURL(audioBlob);
+                audioElement.play();
+            }
+        };
+
+        function sendUpdate(deviceIndex, channelNumber, options) {
+            ws.send(JSON.stringify({
+                device_index: deviceIndex,
+                channel_number: channelNumber,
+                options: options
+            }));
+        }
+
+        audioMixOptions.devices.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.index;
+            option.textContent = device.name;
+            deviceSelect.appendChild(option);
+        });
+
+        deviceSelect.addEventListener('change', (e) => {
+            const selectedDeviceIndex = parseInt(e.target.value);
+            const selectedDevice = audioMixOptions.devices.find(d => d.index === selectedDeviceIndex);
+            
+            channelControls.innerHTML = '';
+            
+            if (selectedDevice) {
+                selectedDevice.channels.forEach(channel => {
+                    const channelDiv = document.createElement('div');
+                    channelDiv.className = 'channel-controls';
+                    
+                    const muteButton = document.createElement('button');
+                    muteButton.textContent = channel.options.is_muted ? 'Unmute' : 'Mute';
+                    muteButton.onclick = () => {
+                        channel.options.is_muted = !channel.options.is_muted;
+                        muteButton.textContent = channel.options.is_muted ? 'Unmute' : 'Mute';
+                        sendUpdate(selectedDeviceIndex, channel.channel_number, { is_muted: channel.options.is_muted });
+                    };
+                    
+                    const volumeSlider = document.createElement('input');
+                    volumeSlider.type = 'range';
+                    volumeSlider.min = 0;
+                    volumeSlider.max = 1;
+                    volumeSlider.step = 0.1;
+                    volumeSlider.value = channel.options.volume;
+                    volumeSlider.className = 'volume-control';
+                    volumeSlider.oninput = (e) => {
+                        channel.options.volume = parseFloat(e.target.value);
+                        sendUpdate(selectedDeviceIndex, channel.channel_number, { volume: channel.options.volume });
+                    };
+                    
+                    channelDiv.appendChild(document.createTextNode(`Channel ${channel.channel_number}: `));
+                    channelDiv.appendChild(muteButton);
+                    channelDiv.appendChild(volumeSlider);
+                    channelControls.appendChild(channelDiv);
+                });
+            }
+        });
+    </script>
+</body>
+</html>

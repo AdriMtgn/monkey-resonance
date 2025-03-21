@@ -1,8 +1,14 @@
+#web
 fastapi
-uvicorn
-pydantic
+uvicorn[standard]
+
+#sound
 sounddevice
-numpy
-pipewire-python
 soundcard
-#pyaudio
+pipewire-python
+
+#other
+pydantic
+numpy
+
+#pyaudio #soundcard en moins bon
