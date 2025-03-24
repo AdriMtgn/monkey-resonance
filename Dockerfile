@@ -49,6 +49,12 @@ RUN apt update && apt install -y \
     libspa-0.2-bluetooth \
     libspa-0.2-jack \
     wireplumber \
+    liblo-dev \
+    libportmidi-dev \
+    libsndfile1-dev \
+    portaudio19-dev \
+    libasound2-dev \
+    libjack-jackd2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python 3.12 as the default python version

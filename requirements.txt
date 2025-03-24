@@ -6,6 +6,7 @@ uvicorn[standard]
 sounddevice
 soundcard
 pipewire-python
+pyo
 
 #other
 pydantic
