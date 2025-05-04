@@ -1,3 +1,4 @@
 .devcontainer/in_container_options/*
 *.pyc
 *.pyo
+*.wav

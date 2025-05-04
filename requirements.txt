@@ -12,4 +12,3 @@ pyo
 pydantic
 numpy
 
-#pyaudio #soundcard en moins bon

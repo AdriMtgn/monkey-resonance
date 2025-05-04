@@ -77,7 +77,7 @@ def chorus(input_stream, depth=1, feedback=0.5, bal=0.5):
     return pyo.Chorus(input_stream, depth=depth, feedback=feedback, bal=bal)
 
 
-effect_chain = [pyo.Chorus, pyo.Phaser, pyo.Delay, pyo.Pan]
+effect_chain = [pyo.Chorus, pyo.Delay]
 
 
 def create_stream(input_channel, effects):
@@ -88,6 +88,11 @@ def create_stream(input_channel, effects):
 
 
 stream = create_stream(0, effect_chain)
+
+rec_stream = pyo.Record(stream, filename="niqdsfvsf.wav", chnls=2)
+rec_stream.play()
+rec_stream.stop()
+
 
 rms_input = pyo.RMS(stream)
 
@@ -102,12 +107,12 @@ stream2 = create_stream(1, [])
 # effect = chorus(input_multi)
 
 # Create a recorder object
-rec = pyo.Record(input1, filename="garage5.wav", chnls=2)
+rec = pyo.Record(input1, filename="azefrdaezd.wav", chnls=2)
 
 # Start recording
 rec.play()
 
-rec1 = pyo.Record(input2, filename="garage4.wav", chnls=2)
+rec1 = pyo.Record(input2, filename="xcvcxcw.wav", chnls=2)
 
 # Start recording
 rec1.play()

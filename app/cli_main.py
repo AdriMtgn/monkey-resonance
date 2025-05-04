@@ -1,16 +1,15 @@
 import pyo
-import sys
-
-from IPython.terminal.embed import InteractiveShellEmbed
-
-from traitlets.config import Config
-
+import datetime
 
 audio_devices = pyo.pa_get_devices_infos()
 
-
 input_audio_device = 0
 output_audio_device = 0
+
+
+def help():
+    print("Pour enregistrer : rec.play()")
+    print("Pour arreter d'enregistrer : rec.stop()")
 
 
 def main():
@@ -31,18 +30,24 @@ def main():
     s.start()
 
     print("Pyo server started. You can now interact with Pyo objects.")
-    print("Type 'exit' or press Ctrl+D to quit.")
 
-    # Configure IPython for autocompletion
-    cfg = Config()
-    cfg.TerminalInteractiveShell.display_completions = "readlinelike"
+    input1 = pyo.Input(0)
+    input2 = pyo.Input(1)
 
-    # Start IPython shell with the configuration
-    shell = InteractiveShellEmbed(config=cfg)
-    shell()
+    rec1 = pyo.Record(
+        input1,
+        f"input1_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
+    )
+    rec2 = pyo.Record(
+        input2,
+        f"input2_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
+    )
 
-    s.stop()
-    s.shutdown()
+    print("Pour manipuler l'entrée 1 : input1, rec1")
+    print("Pour manipuler l'entrée 2 : input2, rec2")
+
+    rec1.play()
+    rec2.play()
 
 
 if __name__ == "__main__":

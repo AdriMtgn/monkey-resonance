@@ -4,8 +4,6 @@ services:
       dockerfile: ./Dockerfile
     volumes:
       - ./app:/base_app/app
-    command: [ "python", "/base_app/app/cli_main.py" ]
-    ports:
-      - "80:80"
+    command: ["tail", "-f", "/dev/null"]
     devices:
       - "/dev/snd:/dev/snd"
