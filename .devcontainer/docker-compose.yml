@@ -1,3 +1,5 @@
+
+
 services:
   devcontainer:
     build:
@@ -6,6 +8,8 @@ services:
     volumes:
       - ../app:/base_app/app
       - ./in_container_options:/root/.vscode-server
+      - ~/monkey-resonance/records:/records    
+    entrypoint: [""]  
     command: ["tail", "-f", "/dev/null"]
     ports:
       - "80:80"

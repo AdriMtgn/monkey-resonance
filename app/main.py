@@ -1,59 +1,59 @@
-from fastapi import FastAPI, WebSocket
-from core.audio_stream import start_stream, stop_stream
-from core.audio_options import update_options, OPTIONS_DEFAULT_VALUES
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+import pyo
+import datetime
+import atexit
 
-import sounddevice as sd
-import os
-from contextlib import asynccontextmanager
+audio_devices = pyo.pa_get_devices_infos()
 
-
-# Set default options for sounddevice
-sd.default.latency = "low"
+input_audio_device = 0
+output_audio_device = 0
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup logic
-    start_stream()
-    yield
-    # Shutdown logic
-    stop_stream()
+def help():
+    print("Pour enregistrer : rec.play()")
+    print("Pour arreter d'enregistrer : rec.stop()")
 
 
-app = FastAPI(lifespan=lifespan)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-@app.get("/")
-async def read_index():
-    return FileResponse("static/mix_table.html")
+def cleanup(s):
+    print("Cleaning up...")
+    s.stop()
+    s.shutdown()
+    print("Cleanup complete.")
 
 
-@app.get("/devices")
-def get_devices():
-    devices = sd.query_devices()
-    return devices
 
+print(
+    f"Selected input device : {audio_devices[0].get(input_audio_device).get('name')}"
+)
+print(
+    f"Selected output device : {audio_devices[1].get(output_audio_device).get('name')}"
+)
 
-@app.get("/devices_page", response_class=HTMLResponse)
-def get_devices_page():
-    with open(os.path.join("static", "index.html")) as f:
-        return HTMLResponse(content=f.read(), status_code=200)
+s = pyo.Server()
+atexit.register(cleanup, s)    
 
+s.setInputDevice(input_audio_device)
+s.setOutputDevice(output_audio_device)
+s.setIchnls(2)
+s.setNchnls(2)
+s.boot()
+s.start()
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    while True:
-        data = await websocket.receive_json()
-        device_index = data.get("device_index")
-        channel_number = data.get("channel_number")
-        new_options = data.get("options", {})
-        if device_index is not None and channel_number is not None:
-            update_options(device_index, channel_number, new_options)
-            await websocket.send_json({"status": "updated"})
-        else:
-            await websocket.send_json({"status": "error", "message": "Invalid data format"})
+print("Pyo server started. You can now interact with Pyo objects.")
+
+input1 = pyo.Input(0)
+input2 = pyo.Input(1)
+
+rec1 = pyo.Record(
+    input1,
+    f"/records/input1_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
+)
+rec2 = pyo.Record(
+    input2,
+    f"/records/input2_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
+)
+
+print("Pour manipuler l'entrée 1 : input1, rec1")
+print("Pour manipuler l'entrée 2 : input2, rec2")
+print("Pour plus d'infos : help()")
+
+   

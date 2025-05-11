@@ -1,4 +1,11 @@
-WebApp pour les singes qui font du son
+Pour les singes qui font du son
 
 
-run : uvicorn main:app --host 0.0.0.0 --port 80
+docker build -t monkey-resonance .
+docker run --device /dev/snd:/dev/snd monkey-resonance:latest detect-sc.py
+docker run -it --device /dev/snd:/dev/snd monkey-resonance:latest
+
+En docker compose (y'a un volume pour les enregistrements)
+docker compose build
+docker compose run mkr detect-sc.py
+docker compose run -it mkr

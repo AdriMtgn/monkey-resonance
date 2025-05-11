@@ -5,7 +5,6 @@ uvicorn[standard]
 #sound
 sounddevice
 soundcard
-pipewire-python
 pyo
 
 #other

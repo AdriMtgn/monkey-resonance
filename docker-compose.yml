@@ -1,9 +1,8 @@
 services:
-  devcontainer:
+  mkr:
     build:
       dockerfile: ./Dockerfile
     volumes:
-      - ./app:/base_app/app
-    command: ["tail", "-f", "/dev/null"]
+      - ~/monkey-resonance/records:/records    
     devices:
       - "/dev/snd:/dev/snd"
