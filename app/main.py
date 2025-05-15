@@ -1,25 +1,15 @@
 import pyo
 import datetime
 import atexit
+from libs.utils import _check_and_create_app_folders, APP_BASE_FOLDER,APP_FOLDERS,help,os,_cleanup
+from libs.audio_stream import AudioStream
+import libs.effect_lib as eff
 
+_check_and_create_app_folders(APP_BASE_FOLDER)
 audio_devices = pyo.pa_get_devices_infos()
 
 input_audio_device = 0
 output_audio_device = 0
-
-
-def help():
-    print("Pour enregistrer : rec.play()")
-    print("Pour arreter d'enregistrer : rec.stop()")
-
-
-def cleanup(s):
-    print("Cleaning up...")
-    s.stop()
-    s.shutdown()
-    print("Cleanup complete.")
-
-
 
 print(
     f"Selected input device : {audio_devices[0].get(input_audio_device).get('name')}"
@@ -29,7 +19,10 @@ print(
 )
 
 s = pyo.Server()
-atexit.register(cleanup, s)    
+atexit.register(_cleanup, s)    
+
+input_nbchannels = pyo.pa_get_input_max_channels(input_audio_device)
+output_nbchannels = pyo.pa_get_output_max_channels(output_audio_device)
 
 s.setInputDevice(input_audio_device)
 s.setOutputDevice(output_audio_device)
@@ -40,20 +33,11 @@ s.start()
 
 print("Pyo server started. You can now interact with Pyo objects.")
 
-input1 = pyo.Input(0)
-input2 = pyo.Input(1)
 
-rec1 = pyo.Record(
-    input1,
-    f"/records/input1_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
-)
-rec2 = pyo.Record(
-    input2,
-    f"/records/input2_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.wav",
-)
+inputs = [AudioStream(i) for i in range(input_nbchannels)]
+input1 = AudioStream(0)
+input2 = AudioStream(1)
 
-print("Pour manipuler l'entrée 1 : input1, rec1")
-print("Pour manipuler l'entrée 2 : input2, rec2")
 print("Pour plus d'infos : help()")
 
    

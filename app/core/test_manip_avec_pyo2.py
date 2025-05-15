@@ -19,6 +19,7 @@ input_audio_device = 0
 output_audio_device = 0
 
 pyo.pa_get_input_max_channels(0)
+pyo.pa_get_output_max_channels(0)
 pyo.pa_get_default_devices_from_host("alsa")
 
 
@@ -129,9 +130,13 @@ rec1.stop()
     for stream in s.getStreams()
 ]
 
+s.getStreams()
+
+[stream.getStreamObject() for stream in s.getStreams()]
+
 [stream.getStreamObject().stop() for stream in s.getStreams()]
 
-test_stream_object = s.getStreams()[3].getStreamObject()
+test_stream_object = s.getStreams()[4].getStreamObject()
 
 dir(test_stream_object)
 

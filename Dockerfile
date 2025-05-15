@@ -66,7 +66,7 @@ COPY app /base_app/app
 # Set working directory
 WORKDIR /base_app/app
 
-RUN mkdir /records
+RUN mkdir /monkey-resonance
 
 # Expose port 80
 EXPOSE 80
