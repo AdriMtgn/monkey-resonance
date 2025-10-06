@@ -6,3 +6,5 @@ services:
       - ~/monkey-resonance:/monkey-resonance    
     devices:
       - "/dev/snd:/dev/snd"
+    ports:
+      - 8005:8005  

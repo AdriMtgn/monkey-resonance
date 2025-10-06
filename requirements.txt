@@ -11,3 +11,5 @@ pyo
 pydantic
 numpy
 
+#model ccontext protocol
+mcp[cli]

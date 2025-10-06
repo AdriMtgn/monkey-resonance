@@ -79,7 +79,7 @@ WORKDIR /base_app/app
 RUN mkdir /monkey-resonance
 
 # Expose port 80
-EXPOSE 80
+EXPOSE 8005
 
 # Default command: run the app interactively
 ENTRYPOINT [ "python" ]
