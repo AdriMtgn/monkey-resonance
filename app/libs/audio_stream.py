@@ -14,6 +14,9 @@ class AudioStream(pyo.PyoObject):
         self.pyo_effects_chain = []
         self.global_volume = 1.0
         self.output = self.input_stream * self.global_volume
+    # Recording state
+    self.recording = False
+    self.recorder = None
 
     # Private Methods
     def _get_effect_class_from_name(self, effect_name):
@@ -142,6 +145,72 @@ class AudioStream(pyo.PyoObject):
         print(f"Effects chain saved to {filepath}")
 
 
+    # Recording API
+    def start_recording(self, filename: str = None):
+        """
+        Start recording the current output to a WAV file under /monkey-resonance/records.
+        If filename is None, generate a timestamped filename.
+        """
+        try:
+            os.makedirs("/monkey-resonance/records", exist_ok=True)
+        except Exception:
+            # Best-effort: ignore errors creating folder
+            pass
+
+        if filename is None:
+            import datetime
+            filename = f"record_{self.input_channel}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+
+        filepath = os.path.join("/monkey-resonance/records", filename)
+
+        if self.recording:
+            raise RuntimeError("Recording already in progress")
+
+        RecordClass = getattr(pyo, 'Record', None)
+        if RecordClass is None:
+            # Fall back to raising an error when Record is not available
+            raise RuntimeError("pyo.Record is not available in this environment")
+
+        # Ensure output is up-to-date
+        self._set_output()
+
+        # Create and start recorder
+        try:
+            # Record expects a PyoObject input; use the final output
+            self.recorder = RecordClass(self.output, filename=filepath)
+            # play/start naming differs, but play() is commonly present on pyo objects
+            if hasattr(self.recorder, 'play'):
+                self.recorder.play()
+            elif hasattr(self.recorder, 'out'):
+                self.recorder.out()
+            self.recording = True
+            return filepath
+        except Exception as e:
+            self.recorder = None
+            raise
+
+    def stop_recording(self):
+        """
+        Stop a running recording and return the recorded filepath (if available).
+        """
+        if not self.recording or self.recorder is None:
+            raise RuntimeError("No recording in progress")
+
+        try:
+            if hasattr(self.recorder, 'stop'):
+                self.recorder.stop()
+            # try to get filename attribute if provided by the recorder
+            filepath = getattr(self.recorder, 'filename', None)
+            # clear recorder
+            self.recorder = None
+            self.recording = False
+            return filepath
+        except Exception:
+            self.recorder = None
+            self.recording = False
+            raise
+
+
     def load_effects(self, effect_name):
         """
         Load the effects chain from a JSON file in the /saved_effects/ directory.
@@ -176,3 +245,10 @@ class AudioStream(pyo.PyoObject):
         Ensure the input stream and all effects are properly stopped and cleaned up.
         """
         self._stop_all_chain()
+        # Stop recorder if active
+        try:
+            if getattr(self, 'recording', False) and getattr(self, 'recorder', None) is not None:
+                if hasattr(self.recorder, 'stop'):
+                    self.recorder.stop()
+        except Exception:
+            pass
