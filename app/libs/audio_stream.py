@@ -1,7 +1,11 @@
 import os
 import json
+from app.libs.utils import APP_BASE_FOLDER, APP_FOLDERS
 import pyo
 import importlib
+
+records_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["SAVED_EFFECTS"])
+effects_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["RECORDS"])
 
 class AudioStream(pyo.PyoObject):
     def __init__(self, input_channel):
@@ -14,9 +18,9 @@ class AudioStream(pyo.PyoObject):
         self.pyo_effects_chain = []
         self.global_volume = 1.0
         self.output = self.input_stream * self.global_volume
-    # Recording state
-    self.recording = False
-    self.recorder = None
+        # Recording state
+        self.recording = False
+        self.recorder = None
 
     # Private Methods
     def _get_effect_class_from_name(self, effect_name):
@@ -128,12 +132,12 @@ class AudioStream(pyo.PyoObject):
 
     def save_effects(self, effect_name):
         """
-        Save the effects chain to a JSON file in the /saved_effects/ directory.
+        Save the effects chain to a JSON file in the APP_BASE_FOLDER/APP_FOLDERS["SAVED_EFFECTS"] directory.
         :param effect_name: The base name of the effect file (without .json).
         """
 
         # Construct the full file path
-        filepath = os.path.join("/monkey-resonance/saved_effects", f"{effect_name}.json")
+        filepath = os.path.join(effects_folder, f"{effect_name}.json")
 
         # Write to the JSON file
         saved_data = {
@@ -148,28 +152,17 @@ class AudioStream(pyo.PyoObject):
     # Recording API
     def start_recording(self, filename: str = None):
         """
-        Start recording the current output to a WAV file under /monkey-resonance/records.
+        Start recording the current output to a WAV file under 'records_folder'.
         If filename is None, generate a timestamped filename.
         """
-        try:
-            os.makedirs("/monkey-resonance/records", exist_ok=True)
-        except Exception:
-            # Best-effort: ignore errors creating folder
-            pass
-
         if filename is None:
             import datetime
             filename = f"record_{self.input_channel}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
 
-        filepath = os.path.join("/monkey-resonance/records", filename)
+        filepath = os.path.join(records_folder, filename)
 
         if self.recording:
             raise RuntimeError("Recording already in progress")
-
-        RecordClass = getattr(pyo, 'Record', None)
-        if RecordClass is None:
-            # Fall back to raising an error when Record is not available
-            raise RuntimeError("pyo.Record is not available in this environment")
 
         # Ensure output is up-to-date
         self._set_output()
@@ -177,12 +170,10 @@ class AudioStream(pyo.PyoObject):
         # Create and start recorder
         try:
             # Record expects a PyoObject input; use the final output
-            self.recorder = RecordClass(self.output, filename=filepath)
+            self.recorder = pyo.Record(self.output, filename=filepath)
             # play/start naming differs, but play() is commonly present on pyo objects
-            if hasattr(self.recorder, 'play'):
-                self.recorder.play()
-            elif hasattr(self.recorder, 'out'):
-                self.recorder.out()
+            self.recorder.play()
+
             self.recording = True
             return filepath
         except Exception as e:
@@ -213,11 +204,11 @@ class AudioStream(pyo.PyoObject):
 
     def load_effects(self, effect_name):
         """
-        Load the effects chain from a JSON file in the /saved_effects/ directory.
+        Load the effects chain from a JSON file in the 'effects_folder' directory.
         :param effect_name: The base name of the effect file (without .json).
         """
         # Construct the full file path
-        filepath = os.path.join("/monkey-resonance/saved_effects", f"{effect_name}.json")
+        filepath = os.path.join(effects_folder, f"{effect_name}.json")
 
         # Check if the file exists
         if not os.path.exists(filepath):

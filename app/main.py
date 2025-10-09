@@ -10,6 +10,8 @@ from threading import Thread
 logger = logging.getLogger()
 
 _check_and_create_app_folders(APP_BASE_FOLDER)
+for folder in APP_FOLDERS:
+    _check_and_create_app_folders(os.path.join(APP_BASE_FOLDER,folder))
 
 if not os.path.exists('/dev/snd'):
 

@@ -31,6 +31,3 @@ def _cleanup(s):
     s.shutdown()
     print("Cleanup complete.")
 
-def help():
-    print("Pour enregistrer : rec.play()")
-    print("Pour arreter d'enregistrer : rec.stop()")

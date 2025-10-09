@@ -12,6 +12,6 @@ services:
     entrypoint: [""]  
     command: ["tail", "-f", "/dev/null"]
     ports:
-      - "80:80"
+      - "8005:8005"
     devices:
       - "/dev/snd:/dev/snd"
