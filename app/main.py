@@ -1,7 +1,7 @@
 import pyo
 import datetime
 import atexit
-from libs.utils import _check_and_create_app_folders, APP_BASE_FOLDER,APP_FOLDERS,help,os,_cleanup
+from libs.utils import _check_and_create_app_folders, APP_BASE_FOLDER,APP_FOLDERS,os,_cleanup
 from libs.audio_stream import AudioStream
 import libs.effect_lib as eff
 import logging
@@ -10,8 +10,6 @@ from threading import Thread
 logger = logging.getLogger()
 
 _check_and_create_app_folders(APP_BASE_FOLDER)
-for folder in APP_FOLDERS:
-    _check_and_create_app_folders(os.path.join(APP_BASE_FOLDER,folder))
 
 if not os.path.exists('/dev/snd'):
 

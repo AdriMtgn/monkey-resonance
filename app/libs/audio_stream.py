@@ -1,6 +1,6 @@
 import os
 import json
-from app.libs.utils import APP_BASE_FOLDER, APP_FOLDERS
+from .utils import APP_BASE_FOLDER, APP_FOLDERS
 import pyo
 import importlib
 

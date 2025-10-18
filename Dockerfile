@@ -53,14 +53,16 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && uv --version
 
 # Create base app directory and use uv to install Python and create a venv.
-WORKDIR /base_app
 RUN mkdir -p /base_app
 
-# Install Python 3.12 via uv and create a project venv (.venv)
-RUN uv python install 3.12 && uv venv --python 3.12
+WORKDIR /base_app
 
-# Ensure the project's venv is on PATH
-ENV PATH="/base_app/.venv/bin:$PATH"
+# Install Python 3.12 and create a venv in /opt/venv
+RUN uv python install 3.12 && uv venv /opt/venv --python 3.12
+
+# Add venv to PATH (this makes it the default python/pip globally in the container)
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv/"
 
 # Copy requirements and use uv's pip interface to install dependencies into the venv
 COPY requirements.txt /base_app/requirements.txt

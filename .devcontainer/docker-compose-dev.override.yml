@@ -1,0 +1,7 @@
+services:
+  mkr:
+    volumes:
+      - .:/base_app
+      - ./in_container_options:/root/.vscode-server
+
+

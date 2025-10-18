@@ -1,6 +1,6 @@
 import os
 from venv import logger
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 import importlib
 import sys
 
@@ -16,20 +16,48 @@ logger.info(f"MCP server will run on {host}:{port}")
 # Create the MCP server instance
 mcp = FastMCP("Monkey Resonance MCP",host=host,port=port)
 
-@mcp.tool()
-def list_globals() -> list:
-    """List all global variables in the main session."""
-    return list(sys.modules["__main__"].__dict__.keys())
+#@mcp.resource("/global_status")
+#def global_status(ctx: Context) -> bool:
+#    """Let you know if everything is ok and the musical backend is working as intended."""
+#    main_variables = list(sys.modules["__main__"].__dict__.keys())
+#
+#    if "AudioStream" not in main_variables:
+#        ctx.error("No AudioStream class in main!")
+#        return False
+#    if "audio_devices" not in main_variables:
+#        ctx.error("No audio device were found")
+#        return False
+#    return True
+#
+#@mcp.resource("/list_inputs_outputs")
+#def list_inputs_outputs(ctx: Context) -> tuple[dict[int, dict], dict[int, dict]]:
+#    """Let you find out which audio devices were found and get some basic informations about the found devices.
+#    
+#    
+#    First element of the tuple are the inputs, second are the outputs. Integer dict keys are the devices index.
+#    """
+#    inputs_outputs = sys.modules["__main__"].__dict__.get("audio_devices")
+#    if not inputs_outputs:
+#        ctx.error("No input or ouput audio periferic found")
+#        return ({},{})
+#    ctx.info(f"Devices found : {inputs_outputs}")    
+#    return inputs_outputs
 
-# Deprecated: call_method_on_global removed in favor of explicit, safer tools
+@mcp.prompt()
+def help():
+    """A prompt that explain how to use the different tools"""
+    return """
+    You can use ressources to get informations on the current state of my music server and instruments.
+    The tools are here for you to use to answer the users needs. It'll help you handle instruments sounds and effects.
+    """
 
-
-@mcp.tool()
-def list_inputs() -> list:
+@mcp.resource("/list_inputs")
+def list_inputs(ctx: Context) -> list:
     """Return a list of available AudioStream inputs with basic state (index, repr, recording)."""
     main = sys.modules.get("__main__")
     if main is None:
         return []
+    ctx.info("Récupération des inputs")
     inputs = main.__dict__.get("inputs", [])
     result = []
     for i, inp in enumerate(inputs):
@@ -42,31 +70,36 @@ def list_inputs() -> list:
             })
         except Exception as e:
             result.append({"index": i, "error": str(e)})
+    ctx.info(f"liste des inputs : {result}")        
     return result
 
 
-@mcp.tool()
-def get_input_effects(index: int) -> dict:
+@mcp.resource("/list_effects/{index}")
+def get_input_effects(ctx: Context,index: int) -> dict:
     """Return the effects chain for the input at `index` (list of effect descriptors)."""
+    ctx.info(f"Looking for input {str(index)} effects...")
     main = sys.modules.get("__main__")
-    if main is None:
-        return {"error": "__main__ not available"}
+
     inputs = main.__dict__.get("inputs", None)
-    if inputs is None:
-        return {"error": "inputs not found"}
+
     try:
         inp = inputs[index]
     except Exception:
+        ctx.error(f"Can't find any input with index {str(index)}...")
         return {"error": "invalid index"}
     try:
-        return {"index": index, "effects": getattr(inp, "effects_chain", [])}
+        effects_chain = getattr(inp, "effects_chain", [])
+        ctx.info(f"Effect chain for index {str(index)} : {effects_chain}")
+        return {"index": index, "effects": effects_chain}
     except Exception as e:
+        ctx.error(f"Can't get effect chain for input index {str(index)}")
         return {"error": str(e)}
 
 
 @mcp.tool()
-def mute_input(index: int) -> dict:
+def mute_input(ctx: Context,index: int) -> dict:
     """Mute the given input by stopping its output. Returns status or error."""
+    ctx.info(f"Trying to mute input {str(index)}")
     main = sys.modules.get("__main__")
     if main is None:
         return {"error": "__main__ not available"}
