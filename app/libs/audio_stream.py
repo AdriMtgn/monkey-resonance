@@ -4,8 +4,8 @@ from .utils import APP_BASE_FOLDER, APP_FOLDERS
 import pyo
 import importlib
 
-records_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["SAVED_EFFECTS"])
-effects_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["RECORDS"])
+records_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["RECORDS"])
+effects_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["SAVED_EFFECTS"])
 
 class AudioStream(pyo.PyoObject):
     def __init__(self, input_channel):
@@ -105,6 +105,35 @@ class AudioStream(pyo.PyoObject):
             self._start_all_chain()
         else:
             raise IndexError("Invalid index for removing an effect.")
+
+    def update_effect(self, position, **kwargs):
+        """
+        Add an effect to the effects chain at a specific position.
+        :param position: Position in the effect chain of the effect to be updated.
+        :param kwargs: New parameters for the effect.
+        """
+        if position is None:
+            raise IndexError("Index can't be None to select an effect.")
+        if position < 0 or position > len(self.effects_chain):
+            raise IndexError("Invalid position can't find an effect at this position.")
+        #TODO : faut tester les parametres pour voir si un attribut setLeparametre existe et on utilise
+        # l'attribu en question avec la valeur du parametre
+        # On fait ça pour tous les paramètres
+        # On vérifie qu'on ne touche pas au paramètre input
+        
+        #if not hasattr(effect, "setInput"):
+        #    raise AttributeError("L'effet choisi n'at pas de méthode setInput, impossible de l'ajouté!")
+        #
+        #self._stop_all_chain()
+        #new_effect = effect(self.input_stream, **kwargs)
+#
+        #self.effects_chain.insert(position, {"effect": effect.__module__ + "." + effect.__name__, "params": kwargs})
+        #self.pyo_effects_chain.insert(position, new_effect)
+#
+        #self._rebuild_chain()
+        #self._set_output()
+        #self._start_all_chain()
+
 
     def _set_output(self):
         """

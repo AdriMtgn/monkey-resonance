@@ -8,7 +8,7 @@ import logging
 from threading import Thread
 
 logger = logging.getLogger()
-
+logging.basicConfig(level=logging.DEBUG)
 _check_and_create_app_folders(APP_BASE_FOLDER)
 
 if not os.path.exists('/dev/snd'):
@@ -49,20 +49,21 @@ try:
     input_nbchannels = pyo.pa_get_input_max_channels(input_audio_device)
 except Exception:
     input_nbchannels = 0
+   
 try:
     output_nbchannels = pyo.pa_get_output_max_channels(output_audio_device)
 except Exception:
     output_nbchannels = 0
 
 # Configure devices only if portaudio reports channels
-if input_nbchannels > 0 and output_nbchannels > 0:
-    s.setInputDevice(input_audio_device)
-    s.setOutputDevice(output_audio_device)
-    s.setIchnls(2)
-    s.setNchnls(2)
-else:
-    logger.error("Aucune carte son detectée")
-    raise(Exception)
+#if input_nbchannels > 0 and output_nbchannels > 0:
+#    s.setInputDevice(input_audio_device)
+#    s.setOutputDevice(output_audio_device)
+#    s.setIchnls(2)
+#    s.setNchnls(2)
+#else:
+#    logger.error("Aucune carte son detectée")
+#    raise(Exception)
 s.boot()
 s.start()
 

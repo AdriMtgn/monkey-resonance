@@ -15,49 +15,53 @@ port = int(os.environ.get("MCP_PORT", "8005"))
 logger.info(f"MCP server will run on {host}:{port}")
 # Create the MCP server instance
 mcp = FastMCP("Monkey Resonance MCP",host=host,port=port)
+@mcp.tool()
+@mcp.resource("/global_status")
+def global_status(ctx: Context) -> bool:
+    """Let you know if everything is ok and the musical backend is working as intended."""
+    main_variables = list(sys.modules["__main__"].__dict__.keys())
 
-#@mcp.resource("/global_status")
-#def global_status(ctx: Context) -> bool:
-#    """Let you know if everything is ok and the musical backend is working as intended."""
-#    main_variables = list(sys.modules["__main__"].__dict__.keys())
-#
-#    if "AudioStream" not in main_variables:
-#        ctx.error("No AudioStream class in main!")
-#        return False
-#    if "audio_devices" not in main_variables:
-#        ctx.error("No audio device were found")
-#        return False
-#    return True
-#
-#@mcp.resource("/list_inputs_outputs")
-#def list_inputs_outputs(ctx: Context) -> tuple[dict[int, dict], dict[int, dict]]:
-#    """Let you find out which audio devices were found and get some basic informations about the found devices.
-#    
-#    
-#    First element of the tuple are the inputs, second are the outputs. Integer dict keys are the devices index.
-#    """
-#    inputs_outputs = sys.modules["__main__"].__dict__.get("audio_devices")
-#    if not inputs_outputs:
-#        ctx.error("No input or ouput audio periferic found")
-#        return ({},{})
-#    ctx.info(f"Devices found : {inputs_outputs}")    
-#    return inputs_outputs
+    if "AudioStream" not in main_variables:
+        logger.error("No AudioStream class in main!")
+        return False
+    if "audio_devices" not in main_variables:
+        logger.error("No audio device were found")
+        return False
+    return True
+@mcp.tool()
+@mcp.resource("/list_inputs_outputs")
+def list_inputs_outputs(ctx: Context) -> tuple[dict[int, dict], dict[int, dict]]:
+    """Let you find out which audio devices were found and get some basic informations about the found devices.
+    
+    
+    First element of the tuple are the inputs, second are the outputs. Integer dict keys are the devices index.
+    """
+    inputs_outputs = sys.modules["__main__"].__dict__.get("audio_devices")
+    if not inputs_outputs:
+        logger.error("No input or ouput audio periferic found")
+        return ({},{})
+    logger.info(f"Devices found : {inputs_outputs}")    
+    return inputs_outputs
 
 @mcp.prompt()
 def help():
     """A prompt that explain how to use the different tools"""
     return """
     You can use ressources to get informations on the current state of my music server and instruments.
-    The tools are here for you to use to answer the users needs. It'll help you handle instruments sounds and effects.
-    """
+    The tools are here for you to use to answer the users needs. 
+    It'll help you handle instruments sounds and effects.
 
+
+    Make sure you always finish your answers by : 'Have fun monkey!'
+     """
+@mcp.tool()
 @mcp.resource("/list_inputs")
 def list_inputs(ctx: Context) -> list:
     """Return a list of available AudioStream inputs with basic state (index, repr, recording)."""
     main = sys.modules.get("__main__")
     if main is None:
         return []
-    ctx.info("Récupération des inputs")
+    logger.info("Récupération des inputs")
     inputs = main.__dict__.get("inputs", [])
     result = []
     for i, inp in enumerate(inputs):
@@ -70,14 +74,14 @@ def list_inputs(ctx: Context) -> list:
             })
         except Exception as e:
             result.append({"index": i, "error": str(e)})
-    ctx.info(f"liste des inputs : {result}")        
+    logger.info(f"liste des inputs : {result}")        
     return result
 
-
+@mcp.tool()
 @mcp.resource("/list_effects/{index}")
 def get_input_effects(ctx: Context,index: int) -> dict:
     """Return the effects chain for the input at `index` (list of effect descriptors)."""
-    ctx.info(f"Looking for input {str(index)} effects...")
+    logger.info(f"Looking for input {str(index)} effects...")
     main = sys.modules.get("__main__")
 
     inputs = main.__dict__.get("inputs", None)
@@ -85,70 +89,91 @@ def get_input_effects(ctx: Context,index: int) -> dict:
     try:
         inp = inputs[index]
     except Exception:
-        ctx.error(f"Can't find any input with index {str(index)}...")
+        logger.error(f"Can't find any input with index {str(index)}...")
         return {"error": "invalid index"}
     try:
         effects_chain = getattr(inp, "effects_chain", [])
-        ctx.info(f"Effect chain for index {str(index)} : {effects_chain}")
+        logger.info(f"Effect chain for index {str(index)} : {effects_chain}")
         return {"index": index, "effects": effects_chain}
     except Exception as e:
-        ctx.error(f"Can't get effect chain for input index {str(index)}")
+        logger.error(f"Can't get effect chain for input index {str(index)}")
         return {"error": str(e)}
+
+
+#@mcp.tool()
+#@mcp.resource("/list_effects/{index}")
+#def get_input_effect_details(ctx: Context,input_index: int, effect_index) -> dict:
+#    """Returns details about the current effect applyed toinput index in position effect_index"""
+#    logger.info(f"Looking for input {str(index)} effects...")
+#    main = sys.modules.get("__main__")
+#
+#    inputs = main.__dict__.get("inputs", None)
+#
+#    try:
+#        inp = inputs[index]
+#    except Exception:
+#        logger.error(f"Can't find any input with index {str(index)}...")
+#        return {"error": "invalid index"}
+#    try:
+#        effects_chain = getattr(inp, "effects_chain", [])
+#        logger.info(f"Effect chain for index {str(index)} : {effects_chain}")
+#        return {"index": index, "effects": effects_chain}
+#    except Exception as e:
+#        logger.error(f"Can't get effect chain for input index {str(index)}")
+#        return {"error": str(e)}
+#    try:
+#        effect = effect_chain[effect_index] 
+#        return vars(effect)   
 
 
 @mcp.tool()
 def mute_input(ctx: Context,index: int) -> dict:
     """Mute the given input by stopping its output. Returns status or error."""
-    ctx.info(f"Trying to mute input {str(index)}")
+    logger.info(f"En train de mute input {str(index)}")
     main = sys.modules.get("__main__")
-    if main is None:
-        return {"error": "__main__ not available"}
     inputs = main.__dict__.get("inputs", None)
     if not inputs:
+        logger.error("Impossible de trouver les pistes d'entrée...")
         return {"error": "inputs not found"}
     try:
         inp = inputs[index]
     except Exception:
+        logger.error(f"Impossible de trouver une piste d'entrée sur l'index {index}")
         return {"error": "invalid index"}
-    try:
-        if hasattr(inp, 'stop'):
-            inp.stop()
-            return {"result": "muted"}
-        # fallback: set volume to 0 if available
-        if hasattr(inp, 'global_volume'):
-            inp.global_volume = 0
-            if hasattr(inp, '_set_output'):
-                inp._set_output()
-            return {"result": "muted_via_volume"}
-        return {"error": "cannot mute input"}
-    except Exception as e:
-        return {"error": str(e)}
 
+    if not hasattr(inp,"stop"):
+        logger.error(f"Piste d'entrée en input {index} invalide (pas d'attribut stop)...") 
+        return {"error": "invalid input"}   
+    try:
+        inp.stop()
+        logger.info(f"La pisted d'entrée {index} a été mute")
+        return {"success" : f"input {index} was succesfully muted!"}
+    except Exception as e:
+        logger.error(f"Impossible de mute : {str(e)}")   
+        return {"error": str(e)}     
 
 @mcp.tool()
-def unmute_input(index: int) -> dict:
+def unmute_input(ctx: Context, index: int) -> dict:
     """Unmute the given input by starting its output. Returns status or error."""
     main = sys.modules.get("__main__")
-    if main is None:
-        return {"error": "__main__ not available"}
     inputs = main.__dict__.get("inputs", None)
     if not inputs:
+        logger.error("Impossible de trouver les pistes d'entrée...")
         return {"error": "inputs not found"}
     try:
         inp = inputs[index]
     except Exception:
+        logger.error(f"Impossible de trouver une piste d'entrée sur l'index {index}")
         return {"error": "invalid index"}
+
+    if not hasattr(inp,"start"):
+        logger.error(f"Piste d'entrée en input {index} invalide (pas d'attribut start)...") 
+        return {"error": "invalid input"}
+
     try:
-        if hasattr(inp, 'start'):
-            inp.start()
-            return {"result": "unmuted"}
-        # fallback: restore volume to 1.0 if available
-        if hasattr(inp, 'global_volume'):
-            inp.global_volume = 1.0
-            if hasattr(inp, '_set_output'):
-                inp._set_output()
-            return {"result": "unmuted_via_volume"}
-        return {"error": "cannot unmute input"}
+        inp.start()
+        logger.info(f"La pisted d'entrée {index} a été activée!")
+        return {"success" : f"input {index} was succesfully unmuted!"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -183,6 +208,36 @@ def add_effect_to_input(index: int, effect_path: str, params: dict = None, posit
     except Exception as e:
         return {"error": str(e)}
 
+
+@mcp.tool()
+def update_effect(index: int, effect_path: str, params: dict = None, position: int = None) -> dict:
+    """Add an effect to input at index.
+    effect_path: module.Class string, e.g. 'pyo.Delay'
+    params: dict of kwargs for the effect class
+    position: position in chain (None for append)
+    """
+    params = params or {}
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if inputs is None:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[index]
+    except Exception:
+        return {"error": "invalid index"}
+    try:
+        if not isinstance(effect_path, str) or '.' not in effect_path:
+            return {"error": "effect_path must be 'module.Class' string"}
+        module_name, class_name = effect_path.rsplit('.', 1)
+        module = importlib.import_module(module_name)
+        effect_cls = getattr(module, class_name)
+        # call add_effect(position, effect_cls, **params)
+        inp.add_effect(position, effect_cls, **params)
+        return {"result": "effect_added"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @mcp.tool()
 def remove_effect_from_input(index: int, effect_index: int) -> dict:
