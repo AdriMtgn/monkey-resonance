@@ -3,48 +3,18 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Update package lists and install necessary dependencies
-RUN apt update && apt install -y \
-    software-properties-common \
-    curl \
-    pkg-config \
-    libcairo2-dev \
-    libportaudio2 \
-    libgirepository1.0-dev \
-    gobject-introspection \
-    gir1.2-girepository-2.0 \
-    gir1.2-gtk-3.0 \
-    build-essential \
-    libffi-dev \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    wget \
-    llvm \
-    libncurses5-dev \
-    libncursesw5-dev \
-    xz-utils \
-    tk-dev \
-    liblzma-dev \
-    python3-openssl \
-    python3-gi \
-    python3-gi-cairo \    
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common curl pkg-config libcairo2-dev libportaudio2 \
+    libgirepository1.0-dev gobject-introspection gir1.2-girepository-2.0 \
+    gir1.2-gtk-3.0 build-essential libffi-dev libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev wget llvm libncurses5-dev \
+    libncursesw5-dev xz-utils tk-dev liblzma-dev python3-openssl python3-gi \
+    python3-gi-cairo liblo-dev libportmidi-dev libsndfile1-dev portaudio19-dev \
+    libasound2-dev libjack-jackd2-dev ca-certificates alsa-utils pulseaudio-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Install Python build dependencies and audio libs (kept from earlier list)
-RUN apt update && apt install -y \
-    liblo-dev \
-    libportmidi-dev \
-    libsndfile1-dev \
-    portaudio19-dev \
-    libasound2-dev \
-    libjack-jackd2-dev \
-    ca-certificates \
-    alsa-utils \
-    pulseaudio-utils \
-    && rm -rf /var/lib/apt/lists/*
-
+    
 # Install Astral's `uv` standalone installer (no Python required). We move the
 # installed binary into /usr/local/bin so it's on PATH for subsequent RUN steps.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
