@@ -1,0 +1,5 @@
+{
+    "python.analysis.typeCheckingMode": "standard",
+    "roo.logLevel": "debug",
+    "roo.enableEnhancedLogging": true
+}

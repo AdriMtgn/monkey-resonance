@@ -1,3 +1,7 @@
+#web
+fastapi
+uvicorn[standard]
+
 #sound
 sounddevice
 soundcard
@@ -7,3 +11,5 @@ pyo
 pydantic
 numpy
 
+#model ccontext protocol
+mcp[cli]

@@ -3,6 +3,8 @@ services:
     build:
       dockerfile: ./Dockerfile
     volumes:
-      - ~/monkey-resonance/records:/records    
+      - ~/monkey-resonance:/monkey-resonance    
     devices:
       - "/dev/snd:/dev/snd"
+    ports:
+      - 8005:8005  

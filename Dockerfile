@@ -3,62 +3,44 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Update package lists and install necessary dependencies
-RUN apt update && apt install -y \
-    software-properties-common \
-    curl \
-    pkg-config \
-    libcairo2-dev \
-    libportaudio2 \
-    libgirepository1.0-dev \
-    gobject-introspection \
-    gir1.2-girepository-2.0 \
-    gir1.2-gtk-3.0 \
-    build-essential \
-    libffi-dev \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    wget \
-    llvm \
-    libncurses5-dev \
-    libncursesw5-dev \
-    xz-utils \
-    tk-dev \
-    liblzma-dev \
-    python3-openssl \
-    python3-gi \
-    python3-gi-cairo \    
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common curl pkg-config libcairo2-dev libportaudio2 \
+    libgirepository1.0-dev gobject-introspection gir1.2-girepository-2.0 \
+    gir1.2-gtk-3.0 build-essential libffi-dev libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev wget llvm libncurses5-dev \
+    libncursesw5-dev xz-utils tk-dev liblzma-dev python3-openssl python3-gi \
+    python3-gi-cairo liblo-dev libportmidi-dev libsndfile1-dev portaudio19-dev \
+    libasound2-dev libjack-jackd2-dev ca-certificates alsa-utils pulseaudio-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Add deadsnakes PPA
-RUN add-apt-repository ppa:deadsnakes/ppa
+    
+# Install Astral's `uv` standalone installer (no Python required). We move the
+# installed binary into /usr/local/bin so it's on PATH for subsequent RUN steps.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && if [ -f /root/.local/bin/uv ]; then mv /root/.local/bin/uv /usr/local/bin/uv; fi \
+    && if [ -f /usr/bin/uv ]; then mv /usr/bin/uv /usr/local/bin/uv; fi \
+    && uv --version
 
-# Update package lists again and install Python 3.12 and other dependencies
-RUN apt update && apt install -y \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    python3-pip \
-    liblo-dev \
-    libportmidi-dev \
-    libsndfile1-dev \
-    portaudio19-dev \
-    libasound2-dev \
-    libjack-jackd2-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Create base app directory and use uv to install Python and create a venv.
+RUN mkdir -p /base_app
 
-# Set Python 3.12 as the default python version
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+WORKDIR /base_app
 
-# Create and activate a virtual environment
-RUN python3.12 -m venv /base_app/venv
-ENV PATH="/base_app/venv/bin:$PATH"
+# Install Python 3.12 and create a venv in /opt/venv
+RUN uv python install 3.12 && uv venv /opt/venv --python 3.12
 
-# Install dependencies within the virtual environment
+# Add venv to PATH (this makes it the default python/pip globally in the container)
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv/"
+
+# Copy requirements and use uv's pip interface to install dependencies into the venv
 COPY requirements.txt /base_app/requirements.txt
-RUN pip install -r /base_app/requirements.txt
+# Install Python packages into the uv-created venv using uv's pip wrapper.
+# This keeps the command simple (like `pip install -r requirements.txt`) but
+# ensures uv's environment is used.
+RUN uv pip install -r /base_app/requirements.txt
+
 
 # Copy application code
 COPY app /base_app/app
@@ -66,11 +48,12 @@ COPY app /base_app/app
 # Set working directory
 WORKDIR /base_app/app
 
-RUN mkdir /records
+RUN mkdir /monkey-resonance
 
 # Expose port 80
-EXPOSE 80
+EXPOSE 8005
 
+# Default command: run the app interactively
 ENTRYPOINT [ "python" ]
 
 CMD ["-i","main.py"]
