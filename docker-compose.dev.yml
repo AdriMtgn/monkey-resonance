@@ -1,0 +1,6 @@
+services:
+  mkr:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.dev
+    image: monkey-resonance-dev:latest

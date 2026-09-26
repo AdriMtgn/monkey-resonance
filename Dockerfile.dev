@@ -1,0 +1,7 @@
+# Dev image: main image + dev dependencies (pytest, ruff)
+# Build the main image first: docker build -t monkey-resonance .
+FROM monkey-resonance:latest
+
+# Install dev dependencies into the existing venv
+COPY requirements-dev.txt /base_app/requirements-dev.txt
+RUN uv pip install -r /base_app/requirements-dev.txt

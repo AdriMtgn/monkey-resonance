@@ -1,5 +1,7 @@
-.devcontainer/in_container_options/*
-in_container_options/*
 *.pyc
 *.pyo
 *.wav
+
+# Agent / tooling artifacts (Roo Code)
+.roo/
+.roomodes

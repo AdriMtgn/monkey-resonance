@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libncursesw5-dev xz-utils tk-dev liblzma-dev python3-openssl python3-gi \
     python3-gi-cairo liblo-dev libportmidi-dev libsndfile1-dev portaudio19-dev \
     libasound2-dev libjack-jackd2-dev ca-certificates alsa-utils pulseaudio-utils \
+    git jq ripgrep less nano make \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -27,7 +28,9 @@ RUN mkdir -p /base_app
 
 WORKDIR /base_app
 
-# Install Python 3.12 and create a venv in /opt/venv
+# Install Python 3.12 into a shared, world-readable location (not under /root)
+# so the non-root user can use it, then create a venv in /opt/venv.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN uv python install 3.12 && uv venv /opt/venv --python 3.12
 
 # Add venv to PATH (this makes it the default python/pip globally in the container)
@@ -42,18 +45,36 @@ COPY requirements.txt /base_app/requirements.txt
 RUN uv pip install -r /base_app/requirements.txt
 
 
+# --- Non-root user -----------------------------------------------------------
+# Create a dedicated user aligned with the host user (uid 1000 by default) so
+# that files written into the bind-mounted data volume keep the host owner.
+# The user is added to the `audio` (gid 29) and `video` (gid 44) groups so it
+# can access /dev/snd when the device is shared with the container.
+# The ubuntu:24.04 base image already ships a user `ubuntu` with UID 1000.
+# We rename it to `mkr` (keeping UID 1000 so files written into the bind-mounted
+# data volume stay owned by the host user) and add it to the audio/video groups
+# so it can access /dev/snd when the device is shared with the container.
+RUN groupadd -g 29 audio 2>/dev/null || true \
+    && groupadd -g 44 video 2>/dev/null || true \
+    && usermod -l mkr -d /home/mkr -m ubuntu \
+    && usermod -aG audio,video mkr
+
 # Copy application code
 COPY app /base_app/app
 
 # Set working directory
 WORKDIR /base_app/app
 
-RUN mkdir /monkey-resonance
+# Data folders + app + venv + uv python owned by the non-root user (GID 1000 is already correct)
+RUN mkdir -p /monkey-resonance/records /monkey-resonance/saved_effects \
+    && chown -R mkr /monkey-resonance /base_app /opt/venv /opt/uv-python
+
+# Drop privileges
+USER mkr
 
 # Expose port 80
 EXPOSE 8005
 
 # Default command: run the app interactively
-ENTRYPOINT [ "python" ]
-
-CMD ["-i","main.py"]
+# (no ENTRYPOINT, so `docker compose run mkr python ...` / `ruff ...` work directly)
+CMD ["python", "-i", "main.py"]

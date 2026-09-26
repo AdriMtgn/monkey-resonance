@@ -2,6 +2,9 @@ services:
   mkr:
     build:
       dockerfile: ./Dockerfile
+    user: mkr
+    stdin_open: true
+    tty: true
     volumes:
       - ~/monkey-resonance:/monkey-resonance    
     devices:
