@@ -8,12 +8,15 @@ RUN uv pip install -r /base_app/requirements-dev.txt
 
 # --- Agent OpenCode ----------------------------------------------------------
 # Binaire standalone officiel (aucun Node requis — important pour l'image x Pi).
-# Installé par le script dans ~/.opencode/bin (HOME=/root pendant le build),
-# puis déplacé dans /usr/local/bin pour être visible par TOUS les users du
-# container (root + mkr) et dans tous les shells, indépendamment du PATH de
-# l'utilisateur root.
+# ATTENTION : l'image de base finit sur USER mkr, il faut repasser en root pour
+# installer dans /usr/local/bin (visible par TOUS les users du container :
+# root + mkr, et dans tous les shells, indépendamment du PATH de l'user), puis
+# redescendre en mkr à la fin.
 # --no-modify-path : le script ne doit pas toucher aux .bashrc du container.
+USER root
 RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /root/.opencode \
     && chmod 755 /usr/local/bin/opencode \
     && opencode --version
+USER mkr
