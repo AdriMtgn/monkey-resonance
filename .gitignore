@@ -5,3 +5,11 @@
 # Agent / tooling artifacts (Roo Code)
 .roo/
 .roomodes
+
+# Tool caches
+.ruff_cache/
+
+# Devcontainer agent : credentials opencode exportés depuis l'hôte
+# (jamais commités) + fichiers d'état temporaires du serveur agent.
+.devcontainer/tmp/
+.devcontainer/opencode-auth.json

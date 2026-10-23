@@ -1,2 +1,9 @@
+# Dépendances de dev — jamais installées dans l'image de production.
+# Install : make dev-deps, ou dans l'image dev (Dockerfile.dev).
 pytest
-ruff
+
+# ruff est épinglé : depuis 0.17, le jeu de règles par défaut inclut BLE, SIM,
+# RUF, TRY... (il était bien plus court avant). Sans épingle, un `pip install
+# -U ruff` dans l'image change silencieusement le résultat de `make lint`.
+# Mettre à jour volontairement : changer la contrainte + relancer `make lint`.
+ruff~=0.17

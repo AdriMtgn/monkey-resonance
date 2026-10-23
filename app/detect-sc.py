@@ -1,5 +1,7 @@
+import sys
+
 import pyo
 
 pyo.pa_list_devices()
 
-exit(0)
+sys.exit(0)

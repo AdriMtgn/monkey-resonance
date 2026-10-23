@@ -1,9 +1,11 @@
-import os
-from venv import logger
-from mcp.server.fastmcp import FastMCP, Context
 import importlib
+import logging
+import os
 import sys
 
+from mcp.server.fastmcp import Context, FastMCP
+
+logger = logging.getLogger(__name__)
 
 # Allow host/port configuration via environment variables so the
 # MCP's HTTP transport can be exposed (for testing tools/clients).
@@ -81,7 +83,7 @@ def list_inputs(ctx: Context) -> list:
 @mcp.resource("/list_effects/{index}")
 def get_input_effects(ctx: Context,index: int) -> dict:
     """Return the effects chain for the input at `index` (list of effect descriptors)."""
-    logger.info(f"Looking for input {str(index)} effects...")
+    logger.info(f"Looking for input {index!s} effects...")
     main = sys.modules.get("__main__")
 
     inputs = main.__dict__.get("inputs", None)
@@ -89,14 +91,14 @@ def get_input_effects(ctx: Context,index: int) -> dict:
     try:
         inp = inputs[index]
     except Exception:
-        logger.error(f"Can't find any input with index {str(index)}...")
+        logger.error(f"Can't find any input with index {index!s}...")
         return {"error": "invalid index"}
     try:
         effects_chain = getattr(inp, "effects_chain", [])
-        logger.info(f"Effect chain for index {str(index)} : {effects_chain}")
+        logger.info(f"Effect chain for index {index!s} : {effects_chain}")
         return {"index": index, "effects": effects_chain}
     except Exception as e:
-        logger.error(f"Can't get effect chain for input index {str(index)}")
+        logger.error(f"Can't get effect chain for input index {index!s}")
         return {"error": str(e)}
 
 
@@ -129,7 +131,7 @@ def get_input_effects(ctx: Context,index: int) -> dict:
 @mcp.tool()
 def mute_input(ctx: Context,index: int) -> dict:
     """Mute the given input by stopping its output. Returns status or error."""
-    logger.info(f"En train de mute input {str(index)}")
+    logger.info(f"En train de mute input {index!s}")
     main = sys.modules.get("__main__")
     inputs = main.__dict__.get("inputs", None)
     if not inputs:
@@ -149,7 +151,7 @@ def mute_input(ctx: Context,index: int) -> dict:
         logger.info(f"La pisted d'entrée {index} a été mute")
         return {"success" : f"input {index} was succesfully muted!"}
     except Exception as e:
-        logger.error(f"Impossible de mute : {str(e)}")   
+        logger.error(f"Impossible de mute : {e!s}")   
         return {"error": str(e)}     
 
 @mcp.tool()
@@ -179,7 +181,7 @@ def unmute_input(ctx: Context, index: int) -> dict:
 
 
 @mcp.tool()
-def add_effect_to_input(index: int, effect_path: str, params: dict = None, position: int = None) -> dict:
+def add_effect_to_input(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
     """Add an effect to input at index.
     effect_path: module.Class string, e.g. 'pyo.Delay'
     params: dict of kwargs for the effect class
@@ -210,7 +212,7 @@ def add_effect_to_input(index: int, effect_path: str, params: dict = None, posit
 
 
 @mcp.tool()
-def update_effect(index: int, effect_path: str, params: dict = None, position: int = None) -> dict:
+def update_effect(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
     """Add an effect to input at index.
     effect_path: module.Class string, e.g. 'pyo.Delay'
     params: dict of kwargs for the effect class
@@ -260,7 +262,7 @@ def remove_effect_from_input(index: int, effect_index: int) -> dict:
 
 
 @mcp.tool()
-def start_input_recording(index: int, filename: str = None) -> dict:
+def start_input_recording(index: int, filename: str | None = None) -> dict:
     """Start recording on the input at `index`. Returns filepath or error."""
     main = sys.modules.get("__main__")
     if main is None:

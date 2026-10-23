@@ -1,8 +1,10 @@
-import os
-import json
-from .utils import APP_BASE_FOLDER, APP_FOLDERS
-import pyo
 import importlib
+import json
+import os
+
+import pyo
+
+from .utils import APP_BASE_FOLDER, APP_FOLDERS
 
 records_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["RECORDS"])
 effects_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["SAVED_EFFECTS"])
@@ -126,10 +128,8 @@ class AudioStream(pyo.PyoObject):
         #
         #self._stop_all_chain()
         #new_effect = effect(self.input_stream, **kwargs)
-#
         #self.effects_chain.insert(position, {"effect": effect.__module__ + "." + effect.__name__, "params": kwargs})
         #self.pyo_effects_chain.insert(position, new_effect)
-#
         #self._rebuild_chain()
         #self._set_output()
         #self._start_all_chain()
@@ -179,7 +179,7 @@ class AudioStream(pyo.PyoObject):
 
 
     # Recording API
-    def start_recording(self, filename: str = None):
+    def start_recording(self, filename: str | None = None):
         """
         Start recording the current output to a WAV file under 'records_folder'.
         If filename is None, generate a timestamped filename.
@@ -205,7 +205,7 @@ class AudioStream(pyo.PyoObject):
 
             self.recording = True
             return filepath
-        except Exception as e:
+        except Exception:
             self.recorder = None
             raise
 
@@ -265,10 +265,11 @@ class AudioStream(pyo.PyoObject):
         Ensure the input stream and all effects are properly stopped and cleaned up.
         """
         self._stop_all_chain()
-        # Stop recorder if active
-        try:
-            if getattr(self, 'recording', False) and getattr(self, 'recorder', None) is not None:
-                if hasattr(self.recorder, 'stop'):
-                    self.recorder.stop()
-        except Exception:
-            pass
+        # Stop recorder if active. Best effort: during interpreter shutdown,
+        # logging/shutdown hooks may already be gone, so swallow everything.
+        if (
+            getattr(self, 'recording', False)
+            and getattr(self, 'recorder', None) is not None
+            and hasattr(self.recorder, 'stop')
+        ):
+            self.recorder.stop()

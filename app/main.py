@@ -1,12 +1,16 @@
-import pyo
-import datetime
+import argparse
 import atexit
-from libs.utils import _check_and_create_app_folders, APP_BASE_FOLDER,APP_FOLDERS,os,_cleanup
-from libs.audio_stream import AudioStream
-import libs.effect_lib as eff
 import logging
 from threading import Thread
-import argparse
+
+import pyo
+from libs.audio_stream import AudioStream
+from libs.utils import (
+    APP_BASE_FOLDER,
+    _check_and_create_app_folders,
+    _cleanup,
+    os,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--with_mcp", action="store_true")
@@ -15,7 +19,7 @@ parser.add_argument("--with_api", action="store_true")
 args = parser.parse_args()
 
 if args.with_mcp and args.with_api:
-    raise("Impossible de lancer le mcp et l'api en même temps")
+    raise SystemExit("Impossible de lancer le mcp et l'api en même temps")
 
 logger = logging.getLogger()
 logging.basicConfig(level=logging.DEBUG)
@@ -24,7 +28,7 @@ _check_and_create_app_folders(APP_BASE_FOLDER)
 if not os.path.exists('/dev/snd'):
 
     logger.error("No audio shared with docker")
-    raise(Exception)
+    raise RuntimeError("No audio shared with docker")
 
 available_audio_devices = pyo.pa_list_devices()
 
