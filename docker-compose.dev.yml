@@ -19,6 +19,11 @@ services:
       # côté hôte, /base_app = racine du repo. Le reste du montage
       # (~/monkey-resonance) et /dev/snd viennent de docker-compose.yml.
       - .:/base_app
+    # En dev, le container est un atelier : on le garde en vie. Le CMD
+    # interactif (python -i main.py) sortirait sans TTY / planterait sans
+    # /dev/snd, et ferait échouer les cibles 'exec' (agent-serve, ...).
+    # L'app se lance à la demande : make run / run-mcp / run-api.
+    command: ["sleep", "infinity"]
     ports:
       # Serveur OpenCode (agent) — le TUI sur l'hôte s'y connecte.
       # cf. make agent-host

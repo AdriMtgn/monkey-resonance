@@ -73,5 +73,8 @@ agent-password: ## Print the agent server password (for OPENCODE_PASSWORD)
 	@cat .devcontainer/tmp/opencode-password
 	@echo
 
-agent: ## OpenCode TUI inside the container (standalone, no server)
-	$(COMPOSE_DEV) run --rm mkr opencode --standalone
+# exec (et non run) : les credentials importés par post-create vivent dans la
+# couche du container dev, pas dans l'image — un 'run' créerait un container
+# neuf sans credentials.
+agent: up-dev ## OpenCode TUI inside the container (standalone, no server)
+	$(COMPOSE_DEV) exec mkr opencode --standalone
