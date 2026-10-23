@@ -1,6 +1,25 @@
+# Override dev : image dev (pytest, ruff, agent OpenCode) + repo monté +
+# port du serveur agent.
+#
+# Utilisation :
+#   make build-dev   # construit l'image dev
+#   make up-dev      # démarre le service avec cette config
+#   make agent-serve # démarre le serveur opencode dans le container
+#
+# Le devcontainer (.devcontainer/devcontainer.json) utilise ces deux fichiers
+# : un seul endroit à maintenir pour le dev, make comme VS Code.
 services:
   mkr:
     build:
       context: .
       dockerfile: ./Dockerfile.dev
     image: monkey-resonance-dev:latest
+    volumes:
+      # Repo complet monté : l'agent (et toi) éditent les fichiers directement
+      # côté hôte, /base_app = racine du repo. Le reste du montage
+      # (~/monkey-resonance) et /dev/snd viennent de docker-compose.yml.
+      - .:/base_app
+    ports:
+      # Serveur OpenCode (agent) — le TUI sur l'hôte s'y connecte.
+      # cf. make agent-host
+      - "4096:4096"

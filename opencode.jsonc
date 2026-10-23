@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Agent OpenCode exécuté DANS le container dev (image dev, user mkr).
+  // Son shell et ses subagents s'exécutent dans le container ; le TUI peut
+  // tourner sur l'hôte et s'y connecter (make agent-host).
+  //
+  // La politique par défaut d'OpenCode autorise déjà tout. On garde ici des
+  // règles explicites pour rendre l'intention lisible et poser un seul
+  // garde-fou utile :
+  // - git push demande confirmation : pas de credentials git montés dans le
+  //   container, un push silencieux de l'agent n'a pas de sens.
+  // Les commandes de workflow (make test/lint/run...) sont explicitement en
+  // allow pour qu'aucune demande n'interrompe l'agent sur le chemin critique.
+  "permissions": [
+    { "action": "shell", "resource": "make *", "effect": "allow" },
+    { "action": "shell", "resource": "uv pip install *", "effect": "allow" },
+    { "action": "shell", "resource": "git push *", "effect": "ask" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "edit", "resource": "*", "effect": "allow" }
+  ]
+}

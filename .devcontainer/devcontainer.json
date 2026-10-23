@@ -1,0 +1,38 @@
+{
+  "name": "Monkey Resonance (dev + agent OpenCode)",
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "../docker-compose.dev.yml"
+  ],
+  "service": "mkr",
+  "workspaceFolder": "/base_app",
+  "remoteUser": "mkr",
+  // Le container garde un process vivant (le service docker) au lieu
+  // d'exécuter le CMD interactif `python -i main.py`, qui sortirait
+  // immédiatement sans TTY.
+  "overrideCommand": true,
+  "shutdownAction": "stopCompose",
+  "forwardPorts": [4096, 8005],
+  "portsAttributes": {
+    "4096": {
+      "label": "OpenCode agent (serveur)",
+      "onAutoForward": "notify"
+    },
+    "8005": {
+      "label": "Monkey Resonance MCP / API",
+      "onAutoForward": "notify"
+    }
+  },
+  // post-create : importe les credentials OpenCode exportés depuis l'hôte
+  // (voir README). post-start : démarre le serveur agent dans le container.
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "postStartCommand": "bash .devcontainer/scripts/agent-server.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python"
+      ]
+    }
+  }
+}
