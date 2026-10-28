@@ -56,7 +56,21 @@ dev-deps: ## Install dev deps (pytest, ruff) on-demand into the running containe
 clean: ## Stop, remove containers, local images and volumes
 	$(COMPOSE) down --rmi local -v
 
-# --- Agent OpenCode (dans le container dev) ----------------------------------
+# --- Simplified dev workflow --------------------------------------------------
+
+dev: ## Start devcontainer + opencode server (all in one command)
+	@bash .devcontainer/scripts/dev-start.sh
+
+app: ## Start/restart app with MCP (auto-starts devcontainer if not running)
+	@bash .devcontainer/scripts/app-start.sh
+
+ask: ## Ask opencode anything (runs in container)
+	@bash .devcontainer/scripts/ask-opencode.sh "$(strip $(1))"
+
+reload-mcp: ## Reload MCP for opencode when app restarts
+	@docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T -w /base_app mkr bash -c "opencode service stop 2>/dev/null || true; sleep 2; opencode service start 2>/dev/null || true; echo 'MCP reloaded'" 2>/dev/null || echo "⚠️  Container not running"
+
+# --- Legacy OpenCode commands (kept for compatibility) -----------------------
 
 up-dev: ## Start the dev service (dev image + repo mounted + agent port)
 	$(COMPOSE_DEV) up -d mkr
@@ -68,13 +82,17 @@ agent-host: ## OpenCode TUI on the host, connected to the in-container server
 	@test -f .devcontainer/tmp/opencode-password || { echo "Pas de mot de passe : lance 'make agent-serve' d'abord."; exit 1; }
 	OPENCODE_PASSWORD="$$(cat .devcontainer/tmp/opencode-password)" opencode --server http://localhost:4096
 
-agent-password: ## Print the agent server password (for OPENCODE_PASSWORD)
+agent-host-ssh: ## OpenCode TUI on the host via SSH (WSL/Windows)
+	@test -f .devcontainer/tmp/opencode-password || { echo "Pas de mot de passe : lance 'make agent-serve' d'abord."; exit 1; }
+	OPENCODE_PASSWORD="$$(cat .devcontainer/tmp/opencode-password)" SSH_TUI=1 opencode --server ssh://localhost:4096
+
+agent-password: ## Print the agent server password
 	@test -f .devcontainer/tmp/opencode-password || { echo "Pas de mot de passe : lance 'make agent-serve' d'abord."; exit 1; }
 	@cat .devcontainer/tmp/opencode-password
 	@echo
 
-# exec (et non run) : les credentials importés par post-create vivent dans la
-# couche du container dev, pas dans l'image — un 'run' créerait un container
-# neuf sans credentials.
-agent: up-dev ## OpenCode TUI inside the container (standalone, no server)
+agent: up-dev ## OpenCode TUI inside the container (standalone)
 	$(COMPOSE_DEV) exec mkr opencode --standalone
+
+agent-ssh: up-dev ## OpenCode TUI from Windows/WSL via SSH to container
+	$(COMPOSE_DEV) exec mkr ssh -L 4097:localhost:4096 -N -R 4096:localhost:4096 /base_app/.opencode/opencode --server http://localhost:4096

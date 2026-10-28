@@ -17,6 +17,10 @@
 
 set -euo pipefail
 
+# Variables pour LiteLLM - exportées pour la TUI standalone et le serveur
+export LITELLM_BASE_URL="${LITELLM_BASE_URL:-http://litellm.montalab/v1/}"
+export LITELLM_API_KEY="${LITELLM_API_KEY:-sk-06a3e028fb8da94ec70e6f91ff7bd68327219729a2d79ad5}"
+
 PORT="${OPENCODE_AGENT_PORT:-4096}"
 HOST="${OPENCODE_AGENT_HOST:-0.0.0.0}"
 

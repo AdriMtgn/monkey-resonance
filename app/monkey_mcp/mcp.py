@@ -16,7 +16,7 @@ port = int(os.environ.get("MCP_PORT", "8005"))
 
 logger.info(f"MCP server will run on {host}:{port}")
 # Create the MCP server instance
-mcp = FastMCP("Monkey Resonance MCP",host=host,port=port)
+mcp = FastMCP("Monkey Resonance MCP", host=host, port=port)
 @mcp.tool()
 @mcp.resource("/global_status")
 def global_status(ctx: Context) -> bool:
@@ -301,20 +301,10 @@ def stop_input_recording(index: int) -> dict:
         return {"error": str(e)}
 
 def start_mcp():
-    # Run the MCP server using the streamable-http transport bound to
-    # the configured host and port.
-    # Current FastMCP.run (installed in the image) exposes a signature
-    # like run(transport, mount_path=None). For streamable-http the
-    # library will bind an HTTP server under a mount path. We'll set
-    # mount_path to '/' and rely on publishing the container port to
-    # make the transport reachable from outside the container. If the
-    # installed FastMCP supports different signatures, attempt the more
-    # expressive call first and fall back to mount_path only.
+    # Run the MCP server using the streamable-http transport
+    # This is the recommended transport for MCP clients like opencode.
+    # The server exposes the MCP endpoint at /mcp.
     mount_path = os.environ.get("MCP_MOUNT_PATH", "/")
 
-
-    # Attempt multiple FastMCP.run signatures to be tolerant of installed
-    # mcp versions. When the transport needs host binding we prefer the
-    # explicit host/port form; otherwise fall back to mount_path-only.
     mcp.run(transport="streamable-http", mount_path=mount_path)
 

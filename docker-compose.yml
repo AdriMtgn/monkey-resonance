@@ -14,4 +14,5 @@ services:
     devices:
       - "/dev/snd:/dev/snd"
     ports:
-      - 8005:8005  
+      - 8005:8005
+      - 4096:4096  

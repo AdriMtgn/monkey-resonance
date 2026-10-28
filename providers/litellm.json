@@ -1,0 +1,13 @@
+{
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "LiteLLM",
+  "options": {
+    "baseURL": "http://litellm.montalab/v1",
+    "apiKey": "{env:LITELLM_API_KEY}"
+  },
+  "models": {
+    "qwen38-35b": {
+      "name": "Qwen3.5-35B"
+    }
+  }
+}

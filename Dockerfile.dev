@@ -18,5 +18,19 @@ RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && rm -rf /root/.opencode \
     && chmod 755 /usr/local/bin/opencode \
-    && opencode --version
+    && opencode --version \
+    && opencode plugin add opencode-plugin-litellm && rm -rf /root/.opencode \
+    && chmod 755 /usr/local/bin/opencode \
+    && opencode --version \
+    && opencode plugin add opencode-plugin-litellm
+USER root
 USER mkr
+RUN opencode plugin add opencode-plugin-litellm
+
+# Créer un config.json avec les modèles litellm
+RUN mkdir -p /home/mkr/.config/opencode && \
+    echo '{"providers":{"litellm":{"npm":"@ai-sdk/openai-compatible","name":"LiteLLM","options":{"baseURL":"http://litellm.montalab/v1","apiKey":"{env:LITELLM_API_KEY}"},"models":{"qwen38-35b":{"name":"Qwen3.5-35B"}}}}}' > /home/mkr/.config/opencode/config.json
+
+# Export variables d'environnement pour LiteLLM dans bashrc
+RUN echo 'export LITELLM_BASE_URL="http://litellm.montalab/v1/"' >> /home/mkr/.bashrc && \
+    echo 'export LITELLM_API_KEY="sk-06a3e028fb8da94ec70e6f91ff7bd68327219729a2d79ad5"' >> /home/mkr/.bashrc

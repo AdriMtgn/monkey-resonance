@@ -1,16 +1,18 @@
 import argparse
-import atexit
 import logging
+import os
 from threading import Thread
 
 import pyo
-from libs.audio_stream import AudioStream
+from libs.audio_stream import AudioStream  # noqa: F401 - Used by mcp.py and api.py via sys.modules
 from libs.utils import (
     APP_BASE_FOLDER,
     _check_and_create_app_folders,
-    _cleanup,
-    os,
 )
+
+# Configure logging early
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--with_mcp", action="store_true")
@@ -21,68 +23,44 @@ args = parser.parse_args()
 if args.with_mcp and args.with_api:
     raise SystemExit("Impossible de lancer le mcp et l'api en même temps")
 
-logger = logging.getLogger()
-logging.basicConfig(level=logging.DEBUG)
 _check_and_create_app_folders(APP_BASE_FOLDER)
 
 if not os.path.exists('/dev/snd'):
-
     logger.error("No audio shared with docker")
     raise RuntimeError("No audio shared with docker")
 
-available_audio_devices = pyo.pa_list_devices()
-
-logger.info(str(available_audio_devices))
-
+# Detect audio devices using hardcoded values for AudioBox USB 96 (hw:0,0)
+# Note: We use device 0 which corresponds to hw:0,0 in ALSA
+logger.info("Using AudioBox USB 96 configuration (hw:0,0)...")
 input_audio_device = 0
 output_audio_device = 0
+input_nbchannels = 2  # AudioBox USB 96 is stereo
+output_nbchannels = 2  # AudioBox USB 96 is stereo
 
-try:
-    audio_devices = pyo.pa_get_devices_infos()
-except Exception:
-    audio_devices = ([], [])
+logger.info(f"  Input device: {input_audio_device} ({input_nbchannels} channels)")
+logger.info(f"  Output device: {output_audio_device} ({output_nbchannels} channels)")
 
-logger.info(str(audio_devices))
-if len(audio_devices[0]) == 0:
-    logger.warning("Aucun input audio trouvé!")
-else:
-    logger.info(f"Selected input device : {audio_devices[0].get(input_audio_device).get('name')}")
-if len(audio_devices[1]) == 0:
-    logger.warning("Aucun output audio trouvé!")
-else:
-    logger.info(f"Selected output device : {audio_devices[1].get(output_audio_device).get('name')}")
-
-logger.info("Starting Pyo Server...")
+# Create and boot the pyo server with correct settings
+logger.info("Creating and booting Pyo Server...")
 s = pyo.Server()
 
-atexit.register(_cleanup, s)
+# Configure device and channels BEFORE booting (required by pyo)
+s.setInputDevice(input_audio_device)
+s.setOutputDevice(output_audio_device)
+s.setIchnls(input_nbchannels)  # stereo input channels
+s.setNchnls(output_nbchannels)  # 2 output channels
+logger.info(f"Server configured with device {input_audio_device}:{output_audio_device}")
+
 s.boot()
+logger.info("Pyo Server booted successfully!")
 
-try:
-    input_nbchannels = pyo.pa_get_input_max_channels(input_audio_device)
-except Exception:
-    input_nbchannels = 0
-
-try:
-    output_nbchannels = pyo.pa_get_output_max_channels(output_audio_device)
-except Exception:
-    output_nbchannels = 0
-
-# Configure devices only if portaudio reports channels
-#if input_nbchannels > 0 and output_nbchannels > 0:
-#    s.setInputDevice(input_audio_device)
-#    s.setOutputDevice(output_audio_device)
-#    s.setIchnls(2)
-#    s.setNchnls(2)
-#else:
-#    logger.error("Aucune carte son detectée")
-#    raise(Exception)
 s.start()
 
 logger.info("Pyo server started. You can now interact with Pyo objects.")
 
 # Prepare audio input handles (create only when Server exists and channels)
-inputs = [AudioStream(i) for i in range(input_nbchannels)]
+# Note: Input() uses the server's configured input device, not a parameter
+inputs = [pyo.Input(i) for i in range(input_nbchannels)]
 
 if args.with_mcp:
     # Start MCP server

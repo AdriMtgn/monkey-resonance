@@ -17,5 +17,17 @@
     { "action": "shell", "resource": "git push *", "effect": "ask" },
     { "action": "read", "resource": "*", "effect": "allow" },
     { "action": "edit", "resource": "*", "effect": "allow" }
-  ]
+  ],
+  "mcp": {
+    "servers": {
+      "monkey-resonance": {
+        "type": "local",
+        "command": [
+          "--",
+          "bash",
+          ".devcontainer/scripts/mcp-stdio.sh"
+        ]
+      }
+    }
+  }
 }

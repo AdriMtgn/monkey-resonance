@@ -7,3 +7,8 @@ pytest
 # -U ruff` dans l'image change silencieusement le résultat de `make lint`.
 # Mettre à jour volontairement : changer la contrainte + relancer `make lint`.
 ruff~=0.17
+
+# mcp est épinglé à 1.x pour compatibilité avec le code MCP existant.
+# MCP 2.x a breaking changes (FastMCP -> MCPServer).
+# Voir : https://py.sdk.modelcontextprotocol.io/v2/migration/
+mcp<2

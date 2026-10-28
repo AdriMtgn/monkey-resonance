@@ -14,6 +14,10 @@ services:
       context: .
       dockerfile: ./Dockerfile.dev
     image: monkey-resonance-dev:latest
+    env_file:
+      # Fichier d'variables d'environnement pour l'API key litellm
+      - ./.devcontainer/tmp/opencode-config/.env
+    network_mode: host
     volumes:
       # Repo complet monté : l'agent (et toi) éditent les fichiers directement
       # côté hôte, /base_app = racine du repo. Le reste du montage
@@ -24,7 +28,3 @@ services:
     # /dev/snd, et ferait échouer les cibles 'exec' (agent-serve, ...).
     # L'app se lance à la demande : make run / run-mcp / run-api.
     command: ["sleep", "infinity"]
-    ports:
-      # Serveur OpenCode (agent) — le TUI sur l'hôte s'y connecte.
-      # cf. make agent-host
-      - "4096:4096"
