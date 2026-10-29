@@ -3,6 +3,9 @@ import logging
 import os
 import sys
 
+# Ensure venv packages are found before local modules (fixes mcp package vs mcp.py conflict)
+sys.path.insert(0, '/opt/venv/lib/python3.12/site-packages')
+
 from mcp.server.fastmcp import Context, FastMCP
 
 logger = logging.getLogger(__name__)
@@ -18,32 +21,38 @@ logger.info(f"MCP server will run on {host}:{port}")
 # Create the MCP server instance
 mcp = FastMCP("Monkey Resonance MCP", host=host, port=port)
 @mcp.tool()
-@mcp.resource("/global_status")
-def global_status(ctx: Context) -> bool:
+def global_status() -> bool:
     """Let you know if everything is ok and the musical backend is working as intended."""
-    main_variables = list(sys.modules["__main__"].__dict__.keys())
+    try:
+        main_variables = list(sys.modules["__main__"].__dict__.keys())
 
-    if "AudioStream" not in main_variables:
-        logger.error("No AudioStream class in main!")
+        if "AudioStream" not in main_variables:
+            logger.error("No AudioStream class in main!")
+            return False
+        if "audio_devices" not in main_variables:
+            logger.error("No audio device were found")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error in global_status: {e}")
         return False
-    if "audio_devices" not in main_variables:
-        logger.error("No audio device were found")
-        return False
-    return True
 @mcp.tool()
-@mcp.resource("/list_inputs_outputs")
-def list_inputs_outputs(ctx: Context) -> tuple[dict[int, dict], dict[int, dict]]:
+def list_inputs_outputs() -> tuple[dict[int, dict], dict[int, dict]]:
     """Let you find out which audio devices were found and get some basic informations about the found devices.
     
     
     First element of the tuple are the inputs, second are the outputs. Integer dict keys are the devices index.
     """
-    inputs_outputs = sys.modules["__main__"].__dict__.get("audio_devices")
-    if not inputs_outputs:
-        logger.error("No input or ouput audio periferic found")
-        return ({},{})
-    logger.info(f"Devices found : {inputs_outputs}")    
-    return inputs_outputs
+    try:
+        inputs_outputs = sys.modules["__main__"].__dict__.get("audio_devices")
+        if not inputs_outputs:
+            logger.error("No input or ouput audio periferic found")
+            return ({}, {})
+        logger.info(f"Devices found : {inputs_outputs}")    
+        return inputs_outputs
+    except Exception as e:
+        logger.error(f"Error in list_inputs_outputs: {e}")
+        return ({}, {})
 
 @mcp.prompt()
 def help():
@@ -57,8 +66,7 @@ def help():
     Make sure you always finish your answers by : 'Have fun monkey!'
      """
 @mcp.tool()
-@mcp.resource("/list_inputs")
-def list_inputs(ctx: Context) -> list:
+def list_inputs( ) -> list:
     """Return a list of available AudioStream inputs with basic state (index, repr, recording)."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -80,8 +88,7 @@ def list_inputs(ctx: Context) -> list:
     return result
 
 @mcp.tool()
-@mcp.resource("/list_effects/{index}")
-def get_input_effects(ctx: Context,index: int) -> dict:
+def get_input_effects(index: int) -> dict:
     """Return the effects chain for the input at `index` (list of effect descriptors)."""
     logger.info(f"Looking for input {index!s} effects...")
     main = sys.modules.get("__main__")
@@ -103,7 +110,6 @@ def get_input_effects(ctx: Context,index: int) -> dict:
 
 
 #@mcp.tool()
-#@mcp.resource("/list_effects/{index}")
 #def get_input_effect_details(ctx: Context,input_index: int, effect_index) -> dict:
 #    """Returns details about the current effect applyed toinput index in position effect_index"""
 #    logger.info(f"Looking for input {str(index)} effects...")
@@ -129,7 +135,7 @@ def get_input_effects(ctx: Context,index: int) -> dict:
 
 
 @mcp.tool()
-def mute_input(ctx: Context,index: int) -> dict:
+def mute_input(index: int) -> dict:
     """Mute the given input by stopping its output. Returns status or error."""
     logger.info(f"En train de mute input {index!s}")
     main = sys.modules.get("__main__")
@@ -155,7 +161,7 @@ def mute_input(ctx: Context,index: int) -> dict:
         return {"error": str(e)}     
 
 @mcp.tool()
-def unmute_input(ctx: Context, index: int) -> dict:
+def unmute_input(index: int) -> dict:
     """Unmute the given input by starting its output. Returns status or error."""
     main = sys.modules.get("__main__")
     inputs = main.__dict__.get("inputs", None)
@@ -301,10 +307,7 @@ def stop_input_recording(index: int) -> dict:
         return {"error": str(e)}
 
 def start_mcp():
-    # Run the MCP server using the streamable-http transport
-    # This is the recommended transport for MCP clients like opencode.
-    # The server exposes the MCP endpoint at /mcp.
-    mount_path = os.environ.get("MCP_MOUNT_PATH", "/")
-
-    mcp.run(transport="streamable-http", mount_path=mount_path)
+    # Run the MCP server using stdio transport
+    # MCP 1.6.0 uses stdio transport by default
+    mcp.run()
 

@@ -21,6 +21,9 @@ services:
     volumes:
       # Repo complet monté : l'agent (et toi) éditent les fichiers directement
       # côté hôte, /base_app = racine du repo. Le reste du montage
+      # IMPORTANT: On travaille dans /base_app qui est le repo root, donc
+      # pour éviter les conflits avec le package 'mcp', on utilise un working
+      # directory différent ou on précise le chemin complet.
       # (~/monkey-resonance) et /dev/snd viennent de docker-compose.yml.
       - .:/base_app
     # En dev, le container est un atelier : on le garde en vie. Le CMD

@@ -1,10 +1,14 @@
 import argparse
 import logging
 import os
+import sys
 from threading import Thread
 
 import pyo
-from libs.audio_stream import AudioStream  # noqa: F401 - Used by mcp.py and api.py via sys.modules
+from libs.audio_stream import AudioStream  # noqa: F401 - Used by server.server via sys.modules
+
+# Add app directory to path for server.server import
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from libs.utils import (
     APP_BASE_FOLDER,
     _check_and_create_app_folders,
@@ -64,10 +68,10 @@ inputs = [pyo.Input(i) for i in range(input_nbchannels)]
 
 if args.with_mcp:
     # Start MCP server
-    logger.info("Starting mpc server")
+    logger.info("Starting MCP server")
 
     def run_mcp():
-        from monkey_mcp.mcp import start_mcp
+        from server.server import start_mcp
         start_mcp()
 
     # Start the MCP server in a non-daemon thread so the process will stay alive.

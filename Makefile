@@ -23,7 +23,13 @@ shell-dev: ## Open a bash shell in the dev image
 run: ## Run the app (interactive)
 	$(COMPOSE) run --rm mkr python main.py
 
-run-mcp: ## Run the app with the MCP server
+run-prod: ## Run the app with production image (no devcontainer tools)
+	docker compose -f docker-compose.yml run --rm app python main.py
+
+run-prod-mcp: ## Run the app with production image and MCP server
+	docker compose -f docker-compose.yml run --rm app python main.py --with_mcp
+
+run-mcp: ## Run the app with MCP server (dev image)
 	$(COMPOSE) run --rm mkr python main.py --with_mcp
 
 run-api: ## Run the app with the API server

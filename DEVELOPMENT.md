@@ -22,14 +22,16 @@ L'application s'exécute dans un **container Docker** (image `monkey-resonance-d
 # 1. Démarrer le devcontainer + agent OpenCode (tout en un)
 make dev
 
-# 2. Lancer l'application avec MCP
-make app
+# 2. Lancer l'application avec MCP (image DEV - recommandée pour dev)
+make run-mcp
 
 # 3. Poser une question à l'agent OpenCode
 make ask "Explique comment fonctionne la chaîne d'effets"
 ```
 
 ### Comprendre chaque commande
+
+#### Développement (Image DEV)
 
 | Commande | Description |
 |----------|-------------|
@@ -40,9 +42,53 @@ make ask "Explique comment fonctionne la chaîne d'effets"
 | `make agent` | OpenCode TUI standalone dans le container |
 | `make agent-serve` | Démarrer le serveur OpenCode pour connexion distante |
 | `make agent-host` | Connecter le TUI OpenCode depuis l'hôte |
-| `make run` | Lancer l'application pure (`python main.py`) |
-| `make run-mcp` | Lancer avec MCP (`python main.py --with_mcp`) |
-| `make run-api` | Lancer avec API (`python main.py --with_api`) |
+| `make run` | Lancer l'application pure (image DEV) |
+| `make run-mcp` | Lancer avec MCP (image DEV) |
+| `make run-api` | Lancer avec API (image DEV) |
+
+#### Production (Image PROD)
+
+| Commande | Description |
+|----------|-------------|
+| `make run-prod` | Lancer l'application (image PROD) |
+| `make run-prod-mcp` | Lancer avec MCP (image PROD) |
+
+**Note**: L'image PROD nécessite un rebuild après les changements de code (`docker build -t monkey-resonance:latest -f Dockerfile .`)
+
+---
+
+### Images Docker
+
+| Image | Usage | Taille |
+|-------|-------|--------|
+| `monkey-resonance-dev` | Développement (OpenCode, MCP, devtools) | ~3.5GB |
+| `monkey-resonance` | Production (application uniquement) | ~2.2GB |
+
+### Rebuild l'image PROD
+
+Après des changements dans `Dockerfile` ou `requirements.txt` :
+
+```bash
+# Rebuild complet
+docker build -t monkey-resonance:latest -f Dockerfile .
+
+# Ou via docker compose
+docker compose -f docker-compose.yml build --no-cache
+```
+
+---
+
+### Images Docker (comparaison)
+
+| Aspect | Image DEV | Image PROD |
+|--------|-----------|------------|
+| Taille | ~3.5GB | ~2.2GB |
+| OpenCode | ✅ Installé | ❌ Non installé |
+| MCP | ✅ (1.6.0) | ✅ (1.6.0) |
+| Dev tools | ✅ pytest, ruff | ❌ |
+| LiteLLM | ✅ Configuré | ❌ |
+| Base | monkey-resonance | ubuntu:24.04 |
+
 
 ---
 

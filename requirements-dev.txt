@@ -8,7 +8,7 @@ pytest
 # Mettre à jour volontairement : changer la contrainte + relancer `make lint`.
 ruff~=0.17
 
-# mcp est épinglé à 1.x pour compatibilité avec le code MCP existant.
-# MCP 2.x a breaking changes (FastMCP -> MCPServer).
-# Voir : https://py.sdk.modelcontextprotocol.io/v2/migration/
-mcp<2
+# MCP 1.6.x pour compatibilité avec FastMCP (MCP 2.x a breaking changes)
+# Nécessite pydantic < 2.14 pour compatibilité
+mcp==1.6.0
+pydantic<2.14
