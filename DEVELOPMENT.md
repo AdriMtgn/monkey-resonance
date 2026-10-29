@@ -59,10 +59,28 @@ make ask "Explique comment fonctionne la chaîne d'effets"
 
 ### Images Docker
 
-| Image | Usage | Taille |
-|-------|-------|--------|
-| `monkey-resonance-dev` | Développement (OpenCode, MCP, devtools) | ~3.5GB |
-| `monkey-resonance` | Production (application uniquement) | ~2.2GB |
+| Image | Usage | Taille | Port MCP |
+|-------|-------|--------|----------|
+| `monkey-resonance-dev` | Développement (OpenCode, MCP, devtools) | ~3.5GB | **8005** |
+| `monkey-resonance` | Production (application uniquement) | ~2.2GB | **8005** |
+
+**Note**: Les deux images utilisent le **même port 8005** pour MCP.
+
+### Auto-killing des conflits de ports
+
+Avant de lancer toute commande `make run-*`, le script `check-ports.sh` vérifie :
+1. Tout processus sur le port 8005 (MCP)
+2. Tout processus sur le port 4096 (OpenCode)
+3. Tout container Docker existant `monkey-resonance-*`
+
+**S'il trouve un conflit**, il vous demande confirmation avant de tuer le processus.
+
+```bash
+# Exemple de sortie du script
+⚠️  Port 8005 (MCP) déjà utilisé par PID: 12345
+Tuer le processus (12345) ? (y/n) y
+✅ Processus 12345 tué - Port 8005 libéré
+```
 
 ### Rebuild l'image PROD
 
@@ -84,10 +102,35 @@ docker compose -f docker-compose.yml build --no-cache
 |--------|-----------|------------|
 | Taille | ~3.5GB | ~2.2GB |
 | OpenCode | ✅ Installé | ❌ Non installé |
-| MCP | ✅ (1.6.0) | ✅ (1.6.0) |
 | Dev tools | ✅ pytest, ruff | ❌ |
 | LiteLLM | ✅ Configuré | ❌ |
+| MCP Port | **8005** | **8005** (same) |
 | Base | monkey-resonance | ubuntu:24.04 |
+
+### Workflow recommandé
+
+1. **Utiliser la même commande pour DEV et PROD** :
+   ```bash
+   # DEV (développement avec OpenCode)
+   make run-mcp
+   
+   # PROD (production sans OpenCode)
+   make run-prod-mcp
+   
+   # Les deux utilisent le port 8005
+   # Le script auto-killera le service existant avant de lancer
+   ```
+
+2. **Le script check-ports.sh gère les conflits automatiquement** :
+   - Vérifie les ports 8005 et 4096
+   - Trouve les containers Docker existants
+   - Demande confirmation avant de tuer
+   - Nettoyage automatique
+
+3. **Pas besoin de gérer les ports manuellement** :
+   - Un seul port pour MCP (8005)
+   - Un seul port pour OpenCode (4096)
+   - Auto-killing si conflit
 
 
 ---
