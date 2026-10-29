@@ -9,9 +9,10 @@ services:
     user: mkr
     stdin_open: true
     tty: true
+    working_dir: /code/app
     volumes:
-      # Volume shared between prod and dev images
-      - /base_app:/base_app    
+      # Mount the app source code
+      - /home/ubuntu/projets/monkey-resonance:/code    
     devices:
       - "/dev/snd:/dev/snd"
     ports:

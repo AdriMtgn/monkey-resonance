@@ -28,16 +28,14 @@ run-mcp: ## Run the app with MCP server (dev image, port 8005)
 	@bash scripts/check-ports.sh || true
 	$(COMPOSE) run --rm mkr python main.py --with_mcp
 
-run-prod: ## Run the app with production image (no devcontainer tools, port 8006)
+run-prod: ## Run the app with production image (no devcontainer tools, port 8005)
 	@bash scripts/check-ports.sh || true
-	docker compose -f docker-compose.yml run --rm app python main.py
+	docker compose -f docker-compose.yml run --rm mkr python main.py
 
-run-prod-mcp: ## Run the app with production image and MCP server (port 8006)
+run-prod-mcp: ## Run the app with production image and MCP server (port 8005)
 	@bash scripts/check-ports.sh || true
-	docker compose -f docker-compose.yml run --rm app python main.py --with_mcp
+	docker compose -f docker-compose.yml run --rm mkr python main.py --with_mcp
 
-run-mcp: ## Run the app with MCP server (dev image)
-	$(COMPOSE) run --rm mkr python main.py --with_mcp
 
 run-api: ## Run the app with the API server
 	$(COMPOSE) run --rm mkr python main.py --with_api

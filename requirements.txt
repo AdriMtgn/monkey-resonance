@@ -11,5 +11,9 @@ pyo
 pydantic
 numpy
 
-#model ccontext protocol
+# Model Context Protocol
+# Pin to 1.6.0 for FastMCP compatibility (2.x has breaking changes)
+# Requires pydantic < 2.14 for compatibility
+mcp==1.6.0
 mcp[cli]
+pydantic<2.14
