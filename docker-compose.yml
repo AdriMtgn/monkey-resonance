@@ -15,9 +15,6 @@ services:
     devices:
       - "/dev/snd:/dev/snd"
     ports:
-      # Production MCP uses port 8006 to avoid conflicts with dev (port 8005)
-      # When both dev and prod run simultaneously, use different ports:
-      # - Dev: port 8005
-      # - Prod: port 8006
-      # Change this to 8005 if you prefer single port usage
-      - 8006:8005  
+      # Both PROD and DEV use port 8005 for MCP
+      # scripts/check-ports.sh will kill any existing process before launching
+      - 8005:8005  

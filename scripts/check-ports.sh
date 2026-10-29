@@ -1,30 +1,60 @@
 #!/bin/bash
-# Script de vérification des ports avant lancement
+# Script de vérification et nettoyage des ports avant lancement
+# TUE automatiquement tout processus qui utilise les ports MCP
 
-echo "=== Vérification des ports avant lancement ==="
+echo "=== Vérification et nettoyage des ports ==="
 
-# Ports à vérifier
-PORTS=(8005 8006 4096)
+# Ports à gérer
+PORTS=(8005 4096)
+PORT_NAMES=("MCP (Dev/Prod)" "OpenCode Agent")
 
-# Vérifier si un port est déjà utilisé
-for port in "${PORTS[@]}"; do
-    if lsof -i :"$port" > /dev/null 2>&1 || ss -tlnp | grep -q ":$port "; then
-        echo "⚠️  Port $port déjà utilisé !"
-        echo "   Processus utilisant le port:"
-        lsof -i :"$port" 2>/dev/null | head -5
-        echo "   (ou: lsof -i :$port)"
-        echo ""
+for i in "${!PORTS[@]}"; do
+    port=${PORTS[$i]}
+    name=${PORT_NAMES[$i]}
+    
+    # Trouver le PID qui utilise ce port
+    pid=$(lsof -t -i :"$port" 2>/dev/null || echo "")
+    
+    if [ -n "$pid" ]; then
+        echo "⚠️  Port $port ($name) déjà utilisé par PID: $pid"
+        
+        # Demander confirmation avant de tuer
+        read -p "Tuer le processus ($pid) ? (y/n) " -n 1 -r
+        echo
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            kill -9 "$pid" 2>/dev/null
+            echo "✅ Processus $pid tué - Port $port libéré"
+        else
+            echo "❌ Port $port toujours utilisé - Annulation"
+            exit 1
+        fi
     fi
 done
 
-# Vérifier les containers Docker
-echo "=== Containers Docker actifs ==="
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -10
+# Nettoyer les containers Docker existants sur les ports
+echo ""
+echo "=== Nettoyer les containers Docker ==="
+
+# Trouver les containers mkr ou app existants
+existing_container=$(docker ps -q --filter "name=monkey-resonance" 2>/dev/null || echo "")
+
+if [ -n "$existing_container" ]; then
+    echo "⚠️  Container Docker existant détecté: $existing_container"
+    read -p "Arrêter et supprimer ce container ? (y/n) " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        docker stop "$existing_container" 2>/dev/null
+        docker rm "$existing_container" 2>/dev/null
+        echo "✅ Container arrête et supprimé"
+    else
+        echo "❌ Container conservé - Annulation"
+        exit 1
+    fi
+fi
 
 echo ""
-echo "=== Résumé ==="
-echo "Développer (DEV) : port 8005 (MCP)"
-echo "Production (PROD): port 8006 (MCP)"
-echo "OpenCode         : port 4096"
-echo ""
-echo "Pour éviter les conflits, ne lancez pas DEV et PROD en même temps !"
+echo "=== Ports prêts pour le lancement ==="
+echo "🟢 MCP (port 8005): Libre"
+echo "🟢 OpenCode Agent (port 4096): Libre"
