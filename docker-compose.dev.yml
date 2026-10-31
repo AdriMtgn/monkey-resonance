@@ -30,4 +30,8 @@ services:
     # interactif (python -i main.py) sortirait sans TTY / planterait sans
     # /dev/snd, et ferait échouer les cibles 'exec' (agent-serve, ...).
     # L'app se lance à la demande : make run / run-mcp / run-api.
+    environment:
+      # En dev le container utilise network_mode: host : l'API doit donc
+      # écouter directement sur MKR_PORT pour tourner en parallèle.
+      MCP_PORT: ${MKR_PORT:-8005}
     command: ["sleep", "infinity"]
