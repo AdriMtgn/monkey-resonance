@@ -1,59 +1,107 @@
-"""Test to verify that AudioBox USB 96 detection works correctly."""
+"""Détection AudioBox / accès carte son avec le backend Pedalboard.
+
+Les tests d'ouverture réelle sont désactivés par défaut : lancer avec
+``RUN_AUDIO_TESTS=1`` quand l'AudioBox est libre.
+"""
+
+import os
+import time
 
 import pytest
+from libs import audio_stream as audio_stream_module
+from libs.audio_devices import list_devices, load_config
+from libs.audio_stream import AudioStream
+from pedalboard.io import AudioFile
 
 
-def test_pyo_server_boots():
-    """Test that pyo Server can boot without errors."""
-    import pyo
-
-    s = pyo.Server()
-    s.boot()
-    s.stop()
-    s.shutdown()
+def _has_audiobox() -> bool:
+    inputs, _outputs = list_devices()
+    return any("audiobox" in str(device["name"]).lower() for device in inputs.values())
 
 
-def test_device_channel_detection():
-    """Test that device channels can be detected after server boot."""
-    import pyo
-
-    s = pyo.Server()
-    s.boot()
-
-    # AudioBox USB 96 should have at least 2 channels
-    input_channels = pyo.pa_get_input_max_channels(0)
-    output_channels = pyo.pa_get_output_max_channels(0)
-
-    assert input_channels > 0, "Input channels should be detected"
-    assert output_channels > 0, "Output channels should be detected"
-
-    s.stop()
-    s.shutdown()
+def test_pedalboard_lists_audio_devices():
+    inputs, outputs = list_devices()
+    if not inputs and not outputs:
+        pytest.skip("Aucun périphérique audio détecté dans cet environnement")
+    assert all("name" in device for device in inputs.values())
+    assert all("name" in device for device in outputs.values())
 
 
-def test_device_configuration():
-    """Test that device configuration works."""
-    import pyo
-
-    s = pyo.Server()
-    s.setInputDevice(0)
-    s.setOutputDevice(0)
-    s.setIchnls(2)
-    s.setNchnls(2)
-    s.boot()
-
-    s.stop()
-    s.shutdown()
+def test_audiobox_is_detected():
+    if not _has_audiobox():
+        pytest.skip("AudioBox USB 96 absente")
+    inputs, _ = list_devices()
+    names = [str(device["name"]) for device in inputs.values()]
+    assert any("AudioBox USB 96" in name for name in names)
 
 
-if __name__ == "__main__":
-    test_pyo_server_boots()
-    print("✓ Server boots successfully")
+def test_config_prefers_shared_capture_and_direct_output():
+    if not _has_audiobox():
+        pytest.skip("AudioBox USB 96 absente")
+    config = load_config()
+    assert "AudioBox" in config.input_device
+    assert "AudioBox" in config.output_device
+    # Entrée partageable (dsnoop) pour pouvoir enregistrer en parallèle.
+    assert "Direct sample snooping device" in config.input_device
+    # Sortie matérielle directe, sans couche PipeWire/Pulse.
+    assert "Direct hardware device" in config.output_device
+    assert config.record_device == config.input_device
+    assert config.buffer_latency_ms > 0
 
-    test_device_channel_detection()
-    print("✓ Device channels detected")
 
-    test_device_configuration()
-    print("✓ Device configuration works")
+@pytest.mark.skipif(
+    os.environ.get("RUN_AUDIO_TESTS") != "1",
+    reason="RUN_AUDIO_TESTS=1 requis (ouvre réellement l'AudioBox)",
+)
+def test_live_stream_opens_muted():
+    config = load_config()
+    engine = AudioStream(
+        input_device=config.input_device,
+        output_device=config.output_device,
+        sample_rate=config.sample_rate,
+        buffer_size=config.buffer_size,
+        num_input_channels=config.input_channels,
+        num_output_channels=config.output_channels,
+        start_muted=True,
+    )
+    try:
+        engine.start(unmute=False)
+        assert engine.is_running
+        assert engine.buffer_size > 0
+        assert engine.sample_rate > 0
+        time.sleep(0.5)
+        engine.read_available()
+    finally:
+        engine.close()
 
-    print("\nAll AudioBox detection tests passed!")
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_AUDIO_TESTS") != "1",
+    reason="RUN_AUDIO_TESTS=1 requis (ouvre réellement l'AudioBox)",
+)
+def test_live_recording_uses_shared_capture(monkeypatch, tmp_path):
+    """L'enregistrement ouvre une 2e capture dsnoop sans couper la sortie."""
+    config = load_config()
+    monkeypatch.setattr(audio_stream_module, "records_folder", str(tmp_path))
+    engine = AudioStream(
+        input_device=config.input_device,
+        output_device=config.output_device,
+        sample_rate=config.sample_rate,
+        buffer_size=config.buffer_size,
+        num_input_channels=config.input_channels,
+        num_output_channels=config.output_channels,
+        start_muted=True,
+    )
+    try:
+        engine.start(unmute=False)
+        engine.start_recording("live_test.wav")
+        time.sleep(1.0)
+        path = engine.stop_recording()
+        assert path is not None
+        assert engine.recording is False
+        with AudioFile(path) as recorded:
+            assert recorded.samplerate == config.sample_rate
+            assert recorded.num_channels == config.input_channels
+            assert recorded.frames >= config.sample_rate // 2
+    finally:
+        engine.close()

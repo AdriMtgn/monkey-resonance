@@ -1,4 +1,3 @@
-import importlib
 import logging
 import os
 import sys
@@ -6,7 +5,7 @@ import sys
 # Ensure venv packages are found before local modules (fixes mcp package vs mcp.py conflict)
 sys.path.insert(0, '/opt/venv/lib/python3.12/site-packages')
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
@@ -207,11 +206,8 @@ def add_effect_to_input(index: int, effect_path: str, params: dict | None = None
     try:
         if not isinstance(effect_path, str) or '.' not in effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(position, effect_cls, **params)
+        # Le moteur Pedalboard résout lui-même les chemins pyo/pedalboard.
+        inp.add_effect(position, effect_path, **params)
         return {"result": "effect_added"}
     except Exception as e:
         return {"error": str(e)}
@@ -219,10 +215,11 @@ def add_effect_to_input(index: int, effect_path: str, params: dict | None = None
 
 @mcp.tool()
 def update_effect(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
-    """Add an effect to input at index.
-    effect_path: module.Class string, e.g. 'pyo.Delay'
+    """Update the parameters of an effect at `position` in input `index`.
+
+    effect_path: module.Class string, kept for API compatibility
     params: dict of kwargs for the effect class
-    position: position in chain (None for append)
+    position: index of the effect in the chain (required)
     """
     params = params or {}
     main = sys.modules.get("__main__")
@@ -238,12 +235,10 @@ def update_effect(index: int, effect_path: str, params: dict | None = None, posi
     try:
         if not isinstance(effect_path, str) or '.' not in effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(position, effect_cls, **params)
-        return {"result": "effect_added"}
+        if position is None:
+            return {"error": "position is required to update an effect"}
+        inp.update_effect(position, **params)
+        return {"result": "effect_updated"}
     except Exception as e:
         return {"error": str(e)}
 

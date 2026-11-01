@@ -3,9 +3,9 @@ fastapi
 uvicorn[standard]
 
 #sound
-sounddevice
-soundcard
-pyo
+# Pedalboard remplace pyo : processing C++ (JUCE), devices ALSA/JUCE,
+# hébergement VST3/AU. Version épinglée pour éviter les surprises de wheel.
+pedalboard==0.9.26
 
 #other
 pydantic

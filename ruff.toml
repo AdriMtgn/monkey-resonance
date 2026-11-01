@@ -3,26 +3,24 @@
 #
 # Ruff est laissé sur son jeu de règles par défaut (ruff >= 0.17 : BLE, SIM,
 # RUF, TRY, PLR, ...). Les seules exceptions sont ci-dessous, une par fichier,
-# chacune justifiée. Elles couvrent uniquement les frontières où pyo/le matériel
-# peut lever n'importe quelle exception : rattraper large ici est un choix
-# (ne jamais faire planter le serveur audio/API), pas un oubli.
+# chacune justifiée. Elles couvrent uniquement les frontières où le moteur
+# audio/JUCE peut lever n'importe quelle exception : rattraper large ici est un
+# choix (ne jamais faire planter le serveur audio/API), pas un oubli.
 
 [lint.per-file-ignores]
-# Couche d'adaptation HTTP : chaque endpoint remappe les erreurs pyo en
-# réponse JSON {"error": ...} pour ne jamais crasher le serveur (FastAPI
-# lancerait une autre erreur inutilement, le serveur audio derrière doit
-# rester vivant).
+# Couche d'adaptation HTTP : chaque endpoint remappe les erreurs du moteur
+# audio en réponse JSON {"error": ...} pour ne jamais crasher le serveur
+# (FastAPI/MCP lancerait une autre erreur inutilement, le serveur audio
+# derrière doit rester vivant).
 "app/monkey_api/api.py" = ["BLE001"]
-"app/monkey_mcp/mcp.py" = ["BLE001"]
+# Même logique pour le serveur MCP : les tools renvoient {"error": ...} et ne
+# doivent jamais faire tomber le serveur, quelle que soit l'exception remontée
+# par le moteur audio (JUCE/Pedalboard compris).
+"app/server/server.py" = ["BLE001"]
 
-# Même logique côté appelant direct de pyo : les exceptions levées par PortAudio
-# via pyo n'ont pas de hiérarchie documentée (RuntimeError, OSError, ...).
+# Même logique côté wrapper AudioStream : les exceptions levées par JUCE n'ont
+# pas de hiérarchie documentée (RuntimeError, ValueError, OSError, ...).
 # S110 : dans __del__, logger peut déjà être coupé à l'arrêt de l'interpréteur,
 # on préfère ignorer silencieusement plutôt que de lever une exception pendant
 # le shutdown (bruitage de l'interpréteur).
 "app/libs/audio_stream.py" = ["BLE001", "S110"]
-
-# main.py : les appels pyo.pa_get_*() sont entourés d'un try/except large parce
-# que la liste des exceptions levées dépend du backend PortAudio/jack chargé
-# dans le container (jack, pulse, alsa...) — on ne peut pas les typer.
-"app/main.py" = ["BLE001"]

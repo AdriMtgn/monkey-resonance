@@ -13,7 +13,8 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile.dev
-    image: monkey-resonance-dev:latest
+    # Tag dédié : ne remplace pas l'image dev pyo de `main`.
+    image: monkey-resonance-pedalboard-dev:latest
     env_file:
       # Fichier d'variables d'environnement pour l'API key litellm
       - ./.devcontainer/tmp/opencode-config/.env

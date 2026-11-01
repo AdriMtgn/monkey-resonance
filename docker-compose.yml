@@ -2,10 +2,9 @@ services:
   mkr:
     build:
       dockerfile: ./Dockerfile
-    # Tag explicite : Dockerfile.dev fait FROM monkey-resonance:latest, il faut
-    # que `make build` produise exactement ce tag (sinon compose taggerait
-    # monkey-resonance-mkr et le build dev échouerait).
-    image: monkey-resonance:latest
+    # Tag dédié à l'expérience : ne remplace pas l'image pyo de `main`.
+    # Pour revenir à pyo, rebuild depuis `main` (image monkey-resonance:latest).
+    image: monkey-resonance-pedalboard:latest
     user: mkr
     stdin_open: true
     tty: true
@@ -13,6 +12,9 @@ services:
     volumes:
       # Mount the app source code (relative: works from any worktree)
       - .:/code
+      # Données persistantes (records/, saved_effects/) partagées avec l'hôte.
+      # Même chemin dans le container que APP_BASE_FOLDER (libs/utils.py).
+      - ${MKR_DATA:-/home/ubuntu/monkey-resonance}:/monkey-resonance
     devices:
       - "/dev/snd:/dev/snd"
     ports:
