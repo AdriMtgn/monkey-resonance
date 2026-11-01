@@ -9,7 +9,7 @@ pytest
 ruff~=0.17
 
 # MCP 2.x pour le transport HTTP streamable (breaking changes vs 1.x)
-mcp>=2.0.0
+mcp>=2.0.0,<3.0.0
 pydantic>=2.10.0
 
 # Client HTTP utilisé par les tests MCP
