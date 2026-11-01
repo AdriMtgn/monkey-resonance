@@ -4,9 +4,7 @@ FROM monkey-resonance:latest
 
 # Install dev dependencies into the existing venv
 COPY requirements-dev.txt /base_app/requirements-dev.txt
-RUN uv pip install -r /base_app/requirements-dev.txt && \
-    # Install MCP package (version 1.x for FastMCP compatibility)
-    uv pip install "mcp<2"
+RUN uv pip install -r /base_app/requirements-dev.txt
 
 # --- Agent OpenCode ----------------------------------------------------------
 # Binaire standalone officiel (aucun Node requis — important pour l'image x Pi).

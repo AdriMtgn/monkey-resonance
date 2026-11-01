@@ -11,12 +11,49 @@ docker compose run mkr python detect-sc.py
 docker compose up -d mkr
 
 docker compose run  --service-ports mkr -i main.py --with_api
+# Note: MCP est activé par défaut, plus besoin de --with_mcp
 
 #TODO :
     - Séparer le mcp du serveru audio (Systeme de queues asynchones?)
     - (Fait) Passer les conteneurs en user pas root → user `mkr` (uid 1000, groupes audio/video)
     - Ajouter un docker de "front" (un chat simple quoi) pour avoir plus de contrôle sur la manière dont intéragissent le llm et le MCP
     - Gérer les ressources / connaissances mises a dispo du MCP. Exposer les effets enregistrés, exposer la documentation de pyo/des effets.
+
+## Démarrage du MCP Server
+
+Le MCP Server est **activé par défaut** dans l'image de production.
+Il s'exécute automatiquement avec le serveur audio.
+
+### Démarrage rapide
+
+```bash
+# Build de l'image de production
+make build
+
+# Démarrer le conteneur avec MCP (déjà activé par défaut)
+make run-mcp
+
+# Ou directement
+docker compose up mkr
+```
+
+Le serveur MCP est accessible sur `http://localhost:8005/mcp`.
+
+### Alternatives de démarrage
+
+```bash
+# Run dans un nouveau container (pour testing)
+make run-mcp-standalone
+
+# Mode API (MCP + API REST)
+make run-api
+
+# Image prod uniquement
+make run-prod
+make run-prod-mcp
+```
+
+---
 
 ## Devcontainer + agent OpenCode
 
@@ -79,13 +116,14 @@ OPENCODE_PASSWORD=$(cat .devcontainer/tmp/opencode-password) \
 ```bash
 make lint       # ruff check app/ (config : ruff.toml, ruff épinglé)
 make test       # pytest tests/ app/
-make run        # python main.py (interactif)
-make run-mcp    # python main.py --with_mcp
-make run-api    # python main.py --with_api
+make run        # python main.py (MCP activé par défaut)
+make run-api    # python main.py --with_api (MCP + API REST)
 make shell-dev  # bash dans l'image dev
 make exec CMD="ls -la"   # commande arbitraire dans le container
 make dev-deps   # uv pip install -r requirements-dev.txt (à la demande)
 ```
+
+**Note** : Le MCP est maintenant activé par défaut, plus besoin du flag `--with_mcp`.
 
 ### 6. Cycle de vie
 

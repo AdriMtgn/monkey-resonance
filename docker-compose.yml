@@ -9,13 +9,14 @@ services:
     user: mkr
     stdin_open: true
     tty: true
-    working_dir: /code/app
+    working_dir: /base_app/app
     volumes:
       # Mount the app source code
-      - /home/ubuntu/projets/monkey-resonance:/code    
+      - /home/ubuntu/projets/monkey-resonance:/base_app    
     devices:
       - "/dev/snd:/dev/snd"
     ports:
       # Both PROD and DEV use port 8005 for MCP
       # scripts/check-ports.sh will kill any existing process before launching
-      - 8005:8005  
+      - 8005:8005
+    command: ["python", "-i", "main.py"]  

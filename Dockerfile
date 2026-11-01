@@ -59,8 +59,9 @@ RUN groupadd -g 29 audio 2>/dev/null || true \
     && usermod -l mkr -d /home/mkr -m ubuntu \
     && usermod -aG audio,video mkr
 
-# Copy application code
+# Copy application code and scripts
 COPY app /base_app/app
+COPY scripts /base_app/scripts
 
 # Set working directory
 WORKDIR /base_app/app

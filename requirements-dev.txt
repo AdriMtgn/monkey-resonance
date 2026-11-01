@@ -1,6 +1,6 @@
 # Dépendances de dev — jamais installées dans l'image de production.
 # Install : make dev-deps, ou dans l'image dev (Dockerfile.dev).
-pytest
+pytest>=8.0.0
 
 # ruff est épinglé : depuis 0.17, le jeu de règles par défaut inclut BLE, SIM,
 # RUF, TRY... (il était bien plus court avant). Sans épingle, un `pip install
@@ -8,7 +8,10 @@ pytest
 # Mettre à jour volontairement : changer la contrainte + relancer `make lint`.
 ruff~=0.17
 
-# MCP 1.6.x pour compatibilité avec FastMCP (MCP 2.x a breaking changes)
-# Nécessite pydantic < 2.14 pour compatibilité
-mcp==1.6.0
-pydantic<2.14
+# MCP 2.x for latest features (breaking changes from 1.x)
+# Requires pydantic >= 2.10.0 for compatibility
+mcp>=2.0.0
+pydantic>=2.10.0
+
+# Additional dev tools
+httpx>=0.27.0

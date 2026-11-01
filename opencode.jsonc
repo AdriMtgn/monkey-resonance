@@ -21,12 +21,8 @@
   "mcp": {
     "servers": {
       "monkey-resonance": {
-        "type": "local",
-        "command": [
-          "--",
-          "bash",
-          ".devcontainer/scripts/mcp-stdio.sh"
-        ]
+        "type": "remote",
+        "url": "http://localhost:8005/mcp"
       }
     }
   }

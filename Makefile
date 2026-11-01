@@ -20,25 +20,24 @@ shell: ## Open a bash shell in the main image
 shell-dev: ## Open a bash shell in the dev image
 	$(COMPOSE_DEV) run --rm mkr /bin/bash
 
-run: ## Run the app (interactive)
-	@bash scripts/check-ports.sh || true
+run: ## Run the app (interactive, MCP enabled by default)
 	$(COMPOSE) run --rm mkr python main.py
 
-run-mcp: ## Run the app with MCP server (dev image, port 8005)
-	@bash scripts/check-ports.sh || true
-	$(COMPOSE) run --rm mkr python main.py --with_mcp
+run-mcp: ## Run the app with MCP server (prod image, MCP enabled by default)
+	$(COMPOSE) up mkr
 
-run-prod: ## Run the app with production image (no devcontainer tools, port 8005)
-	@bash scripts/check-ports.sh || true
+run-prod: ## Run the app with production image (no devcontainer tools, MCP enabled by default)
 	docker compose -f docker-compose.yml run --rm mkr python main.py
 
-run-prod-mcp: ## Run the app with production image and MCP server (port 8005)
-	@bash scripts/check-ports.sh || true
-	docker compose -f docker-compose.yml run --rm mkr python main.py --with_mcp
+run-prod-mcp: ## Run the app with production image and MCP server (MCP enabled by default)
+	docker compose -f docker-compose.yml run --rm mkr python main.py
 
 
 run-api: ## Run the app with the API server
 	$(COMPOSE) run --rm mkr python main.py --with_api
+
+run-mcp-standalone: ## Run MCP server standalone in a new container (for testing)
+	$(COMPOSE) run --rm -w /base_app/app mkr python main.py
 
 test: ## Run the test suite (needs dev image or `make dev-deps` first)
 	$(COMPOSE_DEV) run --rm --workdir /base_app mkr python -m pytest tests/ app/ -v
