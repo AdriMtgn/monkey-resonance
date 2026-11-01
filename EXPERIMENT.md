@@ -148,6 +148,29 @@ brute (pre-effets), pas la sortie. Testé live : 2 captures dsnoop simultanées,
   `test_audio_box_detection.py` (live, `RUN_AUDIO_TESTS=1`, dont
   l'enregistrement).
 
+## MCP en HTTP streamable (MCP 2.x)
+
+Le serveur MCP n'est plus en stdio : `start_mcp()` utilise `MCPServer.run(
+transport="streamable-http", host=..., port=...)`, endpoint par défaut
+**`/mcp`**. `MCP_TRANSPORT=stdio` reste disponible pour les clients qui
+lancent eux-mêmes le process.
+
+```bash
+# Serveur MCP (moteur audio + HTTP dans le même process)
+MCP_PORT=8011 docker compose run --rm --service-ports mkr \
+  python main.py --with_mcp
+# → http://localhost:8011/mcp
+
+# Côté opencode (opencode.jsonc)
+# "monkey-resonance": { "type": "remote", "url": "http://localhost:8005/mcp" }
+```
+
+Validé bout-en-bout le 2026-11-01 avec MCP 2.3.0 : 11 tools exposés,
+`global_status=true`, ajout/maj/liste/suppression d'effet, mute/unmute et
+enregistrement (57 344 frames, 1,195 s) via
+`mcp.client.streamable_http.streamable_http_client`. Le transport stdio a
+aussi été rejoué avec la même version.
+
 ## Lancer ce worktree en parallèle
 
 L'image de cette branche est taguée **`monkey-resonance-pedalboard:latest`**

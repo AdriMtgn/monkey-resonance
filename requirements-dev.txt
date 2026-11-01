@@ -8,7 +8,9 @@ pytest
 # Mettre à jour volontairement : changer la contrainte + relancer `make lint`.
 ruff~=0.17
 
-# MCP 1.6.x pour compatibilité avec FastMCP (MCP 2.x a breaking changes)
-# Nécessite pydantic < 2.14 pour compatibilité
-mcp==1.6.0
-pydantic<2.14
+# MCP 2.x pour le transport HTTP streamable (breaking changes vs 1.x)
+mcp>=2.0.0
+pydantic>=2.10.0
+
+# Client HTTP utilisé par les tests MCP
+httpx>=0.27.0

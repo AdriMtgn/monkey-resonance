@@ -84,10 +84,10 @@ Utilise le MCP pour démarrer l'enregistrement sur l'entrée 1
 
 ### Fichiers modifiés
 
-- `requirements-dev.txt` : Ajout de `mcp<2` pour la version 1.x
-- `app/monkey_mcp/mcp.py` : Transport streamable-http configuré
-- `.opencode/opencode.jsonc` : Configuration du serveur MCP distant
-- `.devcontainer/scripts/start-mcp.sh` : Script de démarrage du MCP
+- `requirements-dev.txt` : `mcp>=2.0.0` (transport HTTP streamable)
+- `app/server/server.py` : `MCPServer` + `run(transport="streamable-http")`
+- `opencode.jsonc` : serveur MCP distant `http://localhost:8005/mcp`
+- `.devcontainer/scripts/start-mcp.sh` : lance `main.py --with_mcp` (HTTP)
 
 ### Ports utilisés
 
@@ -100,7 +100,7 @@ Utilise le MCP pour démarrer l'enregistrement sur l'entrée 1
 |----------|-------------------|-------------|
 | `MCP_HOST` | `0.0.0.0` | Adresse IP pour le MCP |
 | `MCP_PORT` | `8005` | Port pour le MCP |
-| `MCP_MOUNT_PATH` | `/` | Path de montage pour le MCP |
+| `MCP_TRANSPORT` | `streamable-http` | `streamable-http` (HTTP `/mcp`) ou `stdio` |
 
 ## Dépannage
 
@@ -136,7 +136,7 @@ Sortie attendue : `✓ monkey-resonance  connected`
 ## Notes importantes
 
 1. **Audio access** : `/dev/snd` doit être monté dans le container pour que l'audio fonctionne
-2. **Thread-unsafe** : pyo ne peut être appelé que depuis un seul thread de contrôle
+2. **Thread-unsafe** : Pedalboard/pyo ne peuvent être appelés que depuis un seul thread de contrôle
 3. **Session MCP** : Les outils MCP peuvent être utilisés directement dans les conversations opencode
 4. **Permissions** : Le fichier opencode.jsonc dans le container a des permissions d'écriture pour que l'agent puisse le modifier si nécessaire
 

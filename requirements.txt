@@ -12,8 +12,8 @@ pydantic
 numpy
 
 # Model Context Protocol
-# Pin to 1.6.0 for FastMCP compatibility (2.x has breaking changes)
-# Requires pydantic < 2.14 for compatibility
-mcp==1.6.0
+# MCP 2.x : transport HTTP "streamable-http" (endpoint /mcp).
+# FastMCP 1.x ne proposait que stdio/sse.
+mcp>=2.0.0
 mcp[cli]
-pydantic<2.14
+pydantic>=2.10.0

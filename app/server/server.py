@@ -5,7 +5,7 @@ import sys
 # Ensure venv packages are found before local modules (fixes mcp package vs mcp.py conflict)
 sys.path.insert(0, '/opt/venv/lib/python3.12/site-packages')
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +15,21 @@ logger = logging.getLogger(__name__)
 # from the host when the container publishes the port.
 host = os.environ.get("MCP_HOST", "0.0.0.0")
 port = int(os.environ.get("MCP_PORT", "8005"))
+# Transport par défaut : HTTP streamable (MCP 2.x). "stdio" reste possible
+# pour les clients qui lancent le process eux-mêmes (ex : mcp-stdio.sh).
+transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
 
-logger.info(f"MCP server will run on {host}:{port}")
-# Create the MCP server instance
-mcp = FastMCP("Monkey Resonance MCP", host=host, port=port)
+if transport == "stdio":
+    logger.info("MCP server will run over stdio")
+else:
+    logger.info("MCP server will run on http://%s:%s/mcp", host, port)
+# Create the MCP server instance. Host/port are passed to run() with the
+# streamable-http transport (MCP 2.x moved them out of the constructor).
+mcp = MCPServer("Monkey Resonance MCP")
+
+
 @mcp.tool()
-def global_status() -> bool:
+async def global_status() -> bool:
     """Let you know if everything is ok and the musical backend is working as intended."""
     try:
         main_variables = list(sys.modules["__main__"].__dict__.keys())
@@ -36,7 +45,7 @@ def global_status() -> bool:
         logger.error(f"Error in global_status: {e}")
         return False
 @mcp.tool()
-def list_inputs_outputs() -> tuple[dict[int, dict], dict[int, dict]]:
+async def list_inputs_outputs() -> tuple[dict[int, dict], dict[int, dict]]:
     """Let you find out which audio devices were found and get some basic informations about the found devices.
     
     
@@ -54,7 +63,7 @@ def list_inputs_outputs() -> tuple[dict[int, dict], dict[int, dict]]:
         return ({}, {})
 
 @mcp.prompt()
-def help():
+async def help():
     """A prompt that explain how to use the different tools"""
     return """
     You can use ressources to get informations on the current state of my music server and instruments.
@@ -65,7 +74,7 @@ def help():
     Make sure you always finish your answers by : 'Have fun monkey!'
      """
 @mcp.tool()
-def list_inputs( ) -> list:
+async def list_inputs( ) -> list:
     """Return a list of available AudioStream inputs with basic state (index, repr, recording)."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -87,7 +96,7 @@ def list_inputs( ) -> list:
     return result
 
 @mcp.tool()
-def get_input_effects(index: int) -> dict:
+async def get_input_effects(index: int) -> dict:
     """Return the effects chain for the input at `index` (list of effect descriptors)."""
     logger.info(f"Looking for input {index!s} effects...")
     main = sys.modules.get("__main__")
@@ -134,7 +143,7 @@ def get_input_effects(index: int) -> dict:
 
 
 @mcp.tool()
-def mute_input(index: int) -> dict:
+async def mute_input(index: int) -> dict:
     """Mute the given input by stopping its output. Returns status or error."""
     logger.info(f"En train de mute input {index!s}")
     main = sys.modules.get("__main__")
@@ -160,7 +169,7 @@ def mute_input(index: int) -> dict:
         return {"error": str(e)}     
 
 @mcp.tool()
-def unmute_input(index: int) -> dict:
+async def unmute_input(index: int) -> dict:
     """Unmute the given input by starting its output. Returns status or error."""
     main = sys.modules.get("__main__")
     inputs = main.__dict__.get("inputs", None)
@@ -186,7 +195,7 @@ def unmute_input(index: int) -> dict:
 
 
 @mcp.tool()
-def add_effect_to_input(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
+async def add_effect_to_input(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
     """Add an effect to input at index.
     effect_path: module.Class string, e.g. 'pyo.Delay'
     params: dict of kwargs for the effect class
@@ -214,7 +223,7 @@ def add_effect_to_input(index: int, effect_path: str, params: dict | None = None
 
 
 @mcp.tool()
-def update_effect(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
+async def update_effect(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
     """Update the parameters of an effect at `position` in input `index`.
 
     effect_path: module.Class string, kept for API compatibility
@@ -243,7 +252,7 @@ def update_effect(index: int, effect_path: str, params: dict | None = None, posi
         return {"error": str(e)}
 
 @mcp.tool()
-def remove_effect_from_input(index: int, effect_index: int) -> dict:
+async def remove_effect_from_input(index: int, effect_index: int) -> dict:
     """Remove effect by index from input's effect chain."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -263,7 +272,7 @@ def remove_effect_from_input(index: int, effect_index: int) -> dict:
 
 
 @mcp.tool()
-def start_input_recording(index: int, filename: str | None = None) -> dict:
+async def start_input_recording(index: int, filename: str | None = None) -> dict:
     """Start recording on the input at `index`. Returns filepath or error."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -283,7 +292,7 @@ def start_input_recording(index: int, filename: str | None = None) -> dict:
 
 
 @mcp.tool()
-def stop_input_recording(index: int) -> dict:
+async def stop_input_recording(index: int) -> dict:
     """Stop recording on the input at `index`. Returns filepath or error."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -302,7 +311,14 @@ def stop_input_recording(index: int) -> dict:
         return {"error": str(e)}
 
 def start_mcp():
-    # Run the MCP server using stdio transport
-    # MCP 1.6.0 uses stdio transport by default
-    mcp.run()
+    """Démarre le serveur MCP.
+
+    Transport par défaut : HTTP streamable, endpoint ``/mcp``
+    (``http://<host>:<port>/mcp``). ``MCP_TRANSPORT=stdio`` force le stdio
+    pour un client qui lance lui-même le process.
+    """
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+    mcp.run(transport="streamable-http", host=host, port=port)
 
