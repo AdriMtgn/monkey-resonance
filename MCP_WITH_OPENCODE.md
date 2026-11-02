@@ -22,6 +22,11 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `start_input_recording(index, filename)` | Démarrer l'enregistrement audio |
 | `stop_input_recording(index)` | Arrêter l'enregistrement |
 | `list_inputs_outputs()` | Liste des devices audio d'entrée/sortie |
+| `set_output_volume(index, volume)` | Volume de sortie (gain stéréo) |
+| `get_rms_level(index, window_size)` | Niveau RMS / peak / dBFS |
+| `get_pitch_info(index)` | Pitch, note MIDI, confiance |
+| `get_frequency_analysis(index, fft_size)` | Spectre FFT, dominante, bandes |
+| `get_audio_profile(index)` | Profil complet RMS + pitch + spectre |
 | `global_status()` | Vérifie si le système audio fonctionne |
 
 ## Utilisation

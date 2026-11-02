@@ -45,4 +45,13 @@ def test_mcp_module_defines_server():
     assert mcp_mod.mcp.name == "Monkey Resonance MCP"
     # les tools historiques doivent survivre à un refactor
     tools = {tool.name for tool in mcp_mod.mcp._tool_manager.list_tools()}
-    assert {"list_inputs", "mute_input", "add_effect_to_input"} <= tools
+    assert {
+        "list_inputs",
+        "mute_input",
+        "add_effect_to_input",
+        "set_output_volume",
+        "get_rms_level",
+        "get_pitch_info",
+        "get_frequency_analysis",
+        "get_audio_profile",
+    } <= tools

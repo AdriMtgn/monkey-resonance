@@ -141,12 +141,37 @@ brute (pre-effets), pas la sortie. Testé live : 2 captures dsnoop simultanées,
   via une seconde capture dsnoop.
 - `app/libs/effect_lib.py` : mapping pyo → Pedalboard, `CustomDelay`,
   `EffectSlot`, chemins natifs `pedalboard.Classe`.
+- `app/libs/music_analysis.py` : analyse temps réel numpy (RMS, pitch,
+  spectre), alimentée par une **capture dsnoop dédiée** ; remplace
+  l'analyseur pyo.
 - `app/main.py` : point d'entrée, threads API/MCP, arrêt propre SIGINT/SIGTERM.
 - `app/detect-sc.py` : liste les devices et teste le stream (muet par défaut).
 - Tests : `tests/test_audio_devices.py`, `test_effects.py`,
-  `test_audio_stream_offline.py` (sans device) ;
+  `test_audio_stream_offline.py` (sans device), `test_music_analysis.py` ;
   `test_audio_box_detection.py` (live, `RUN_AUDIO_TESTS=1`, dont
   l'enregistrement).
+
+## Analyse audio (MCP)
+
+Les outils d'analyse de `main` sont portés sur Pedalboard, sans pyo :
+
+| Tool | Résultat |
+| --- | --- |
+| `get_rms_level(index, window_size)` | RMS, peak, dBFS, présence de signal |
+| `get_pitch_info(index)` | fréquence (autocorrélation), note MIDI, nom, confiance |
+| `get_frequency_analysis(index, fft_size)` | dominante, centroïde, bandes, 5 pics |
+| `get_audio_profile(index)` | RMS + pitch + note + dominante |
+| `set_output_volume(index, volume)` | gain de sortie (les 2 canaux) |
+
+`index` désigne le **canal d'entrée** (0 = gauche, 1 = droite). Pedalboard
+n'expose pas de gain par canal : `set_output_volume` applique le gain au
+stream stéréo, l'index est conservé pour compatibilité.
+
+L'analyseur ouvre une **troisième capture dsnoop** (stream principal +
+enregistrement + analyse) et alimente un ring buffer de 4 s. Le seuil de
+signal est −60 dBFS (bruit de fond de l'AudioBox ignoré). Pitch : 50–2000 Hz.
+Validé live : les 3 captures coexistent, enregistrement de 24 576 frames
+pendant l'analyse.
 
 ## MCP en HTTP streamable (MCP 2.x)
 

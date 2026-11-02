@@ -7,6 +7,12 @@ sys.path.insert(0, '/opt/venv/lib/python3.12/site-packages')
 
 from mcp.server import MCPServer
 
+try:
+    from libs.music_analysis import get_analyzer
+    _analyzer_available = True
+except ImportError:  # pragma: no cover - dépendances optionnelles
+    _analyzer_available = False
+
 logger = logging.getLogger(__name__)
 
 # Allow host/port configuration via environment variables so the
@@ -309,6 +315,81 @@ async def stop_input_recording(index: int) -> dict:
         return {"result": filepath}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ----------------------------------------------------------------------
+# Volume / analyse musicale
+# ----------------------------------------------------------------------
+@mcp.tool()
+async def set_output_volume(index: int, volume: float) -> dict:
+    """Set the output volume (0.0 = mute, 1.0 = normal).
+
+    ``index`` is kept for API compatibility (0 = left, 1 = right). Pedalboard
+    applies a single gain to the stereo stream, so both channels are affected.
+    """
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[0]
+        channels = int(getattr(inp, "num_output_channels", 2))
+        if index < 0 or index >= channels:
+            return {"error": f"Output index {index} out of range (0..{channels - 1})"}
+        inp.global_volume = max(float(volume), 0.0)
+        return {
+            "result": f"Volume set to {inp.global_volume} for output {index} (stereo)"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _analyzer_reply(kind: str, index: int, **kwargs: object) -> dict:
+    """Appelle l'analyseur global et emballe le résultat comme l'ancien MCP."""
+    if not _analyzer_available:
+        return {"error": "Audio analyzer not available"}
+    analyzer = get_analyzer()
+    if analyzer is None:
+        return {"error": "Analyzer not initialized (no audio input)"}
+    try:
+        if kind == "profile":
+            return {"profile": analyzer.analyze_audio_profile(index)}
+        if kind == "rms":
+            return {"rms": analyzer.analyze_rms(index, **kwargs)}
+        if kind == "pitch":
+            return {"pitch": analyzer.analyze_pitch(index)}
+        if kind == "frequency":
+            return {"frequency": analyzer.analyze_frequency(index, **kwargs)}
+        return {"error": f"unknown analysis: {kind}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def get_audio_profile(index: int) -> dict:
+    """Get a comprehensive audio profile (RMS, pitch, MIDI note, spectrum)."""
+    return _analyzer_reply("profile", index)
+
+
+@mcp.tool()
+async def get_rms_level(index: int, window_size: int = 2048) -> dict:
+    """Get the RMS / peak level for an input channel."""
+    return _analyzer_reply("rms", index, window_size=window_size)
+
+
+@mcp.tool()
+async def get_pitch_info(index: int) -> dict:
+    """Get the detected pitch, MIDI note and confidence for an input."""
+    return _analyzer_reply("pitch", index)
+
+
+@mcp.tool()
+async def get_frequency_analysis(index: int, fft_size: int = 2048) -> dict:
+    """Get FFT analysis (dominant frequency, centroid, bands, peaks)."""
+    return _analyzer_reply("frequency", index, fft_size=fft_size)
+
 
 def start_mcp():
     """Démarre le serveur MCP.
