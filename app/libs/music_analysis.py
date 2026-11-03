@@ -5,6 +5,13 @@ Le callback C++ de ``pedalboard.io.AudioStream`` n'expose pas ses échantillons
 dédiée** (input-only) qui alimente un ring buffer numpy. Les outils MCP lisent
 ce buffer sans jamais toucher au thread audio.
 
+Deux signaux sont disponibles :
+
+- **dry** : l'entrée brute, telle que captée par la carte ;
+- **wet** : la même entrée repassée dans une copie de la chaîne d'effets du
+  moteur (``WetPath``). C'est l'équivalent de la sortie, calculé hors du
+  callback audio : les plugins sont les mêmes, avec les mêmes paramètres.
+
 L'analyse est purement numpy : RMS, pitch (autocorrélation), spectre FFT,
 profil MIDI. Aucune dépendance à pyo.
 """
@@ -14,15 +21,24 @@ from __future__ import annotations
 import atexit
 import logging
 import math
+import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+from pedalboard import Gain, Pedalboard
+from pedalboard.io import AudioFile
 from pedalboard.io import AudioStream as PedalboardAudioStream
 
+from .effect_lib import EffectSlot
+from .utils import APP_BASE_FOLDER, APP_FOLDERS
+
 logger = logging.getLogger(__name__)
+
+records_folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["RECORDS"])
 
 # ~4 s à 48 kHz : assez long pour détecter des fondamentales autour de 50 Hz.
 RING_SECONDS = 4.0
@@ -31,6 +47,9 @@ CAPTURE_POLL_S = 0.004
 # Seuil « signal présent » (~-60 dBFS) : sous ce niveau, on considère que
 # c'est le bruit de fond de l'interface, pas un instrument.
 SILENCE_RMS = 1e-3
+# Marge (s) entre la durée écrite et le temps réel avant de couper un
+# enregistrement wet qui s'emballe.
+GUARD_SECONDS = 10.0
 
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
@@ -110,6 +129,216 @@ def detect_pitch(
     return float(frequency), confidence
 
 
+class _Ring:
+    """Ring buffer stéréo protégé par un verrou (derniers frames écrits)."""
+
+    def __init__(self, channels: int, size: int) -> None:
+        self.channels = channels
+        self.size = max(int(size), 1)
+        self._data = np.zeros((channels, self.size), dtype=np.float32)
+        self._write = 0
+        self._count = 0
+        self._lock = threading.Lock()
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+    def write(self, chunk: np.ndarray) -> None:
+        frames = chunk.shape[1]
+        if frames == 0:
+            return
+        if frames > self.size:
+            chunk = chunk[:, -self.size :]
+            frames = self.size
+        with self._lock:
+            end = self._write + frames
+            if end <= self.size:
+                self._data[:, self._write : end] = chunk
+            else:
+                first = self.size - self._write
+                self._data[:, self._write :] = chunk[:, :first]
+                self._data[:, : end - self.size] = chunk[:, first:]
+            self._write = end % self.size
+            self._count = min(self._count + frames, self.size)
+
+    def latest(self, window_size: int) -> np.ndarray:
+        size = max(int(window_size), 1)
+        output = np.zeros((self.channels, size), dtype=np.float32)
+        with self._lock:
+            available = min(self._count, size)
+            if available:
+                indices = (np.arange(self._write - available, self._write)) % self.size
+                output[:, -available:] = self._data[:, indices]
+        return output
+
+
+class WetPath:
+    """Reproduit la chaîne d'effets du moteur sur le signal capté.
+
+    Pedalboard n'expose pas la sortie de son callback C++. On rejoue donc la
+    chaîne courante (mêmes plugins, mêmes paramètres, même gain de sortie) sur
+    les échantillons dry : le résultat est le signal post-effets, à quelques
+    millisecondes près, et il peut être enregistré et analysé.
+    """
+
+    def __init__(self, engine: Any, channels: int, sample_rate: float, ring_size: int) -> None:
+        self._engine = engine
+        self._channels = channels
+        self._sample_rate = float(sample_rate)
+        # Le moteur traite des buffers de ``buffer_size`` frames ; on reproduit
+        # ce découpage pour que les dynamiques (compresseur, limiteur) se
+        # comportent exactement comme dans le callback audio.
+        self._block_size = max(int(getattr(engine, "buffer_size", 128) or 128), 1)
+        self._ring = _Ring(channels, ring_size)
+        self._board = Pedalboard([])
+        self._signature: tuple[Any, ...] | None = None
+        self._lock = threading.Lock()
+        self._writer: AudioFile | None = None
+        self._path: str | None = None
+        self._error: str | None = None
+        # Garde-fou : durée écrite vs temps réel (protège le disque).
+        self._frames_written = 0
+        self._write_started = 0.0
+
+    # ------------------------------------------------------------------
+    # État
+    # ------------------------------------------------------------------
+    @property
+    def ring(self) -> _Ring:
+        return self._ring
+
+    @property
+    def error(self) -> str | None:
+        return self._error
+
+    @property
+    def recording(self) -> bool:
+        return self._writer is not None
+
+    @property
+    def recording_path(self) -> str | None:
+        return self._path
+
+    def _chain(self) -> list[dict[str, Any]]:
+        chain = getattr(self._engine, "effects_chain", None)
+        return list(chain) if chain else []
+
+    def _signature_for(self, chain: list[dict[str, Any]], volume: float) -> tuple[Any, ...]:
+        effects = tuple(
+            (
+                str(item.get("effect")),
+                repr(sorted((item.get("params") or {}).items())),
+            )
+            for item in chain
+        )
+        return (effects, round(float(volume), 6))
+
+    def _rebuild(self, chain: list[dict[str, Any]], volume: float) -> None:
+        plugins: list[Any] = []
+        for item in chain:
+            slot = EffectSlot.create(str(item["effect"]), dict(item.get("params") or {}))
+            plugins.extend(slot.plugins)
+        if volume <= 0.0:
+            plugins.append(Gain(gain_db=-100.0))
+        elif not math.isclose(volume, 1.0):
+            plugins.append(Gain(gain_db=20.0 * math.log10(volume)))
+        self._board = Pedalboard(plugins)
+        logger.info("WetPath : chaîne reconstruite (%s plugins)", len(plugins))
+
+    def process(self, chunk: np.ndarray) -> np.ndarray:
+        """Rejoue la chaîne sur ``chunk`` et retourne le signal traité."""
+        chain = self._chain()
+        volume = float(getattr(self._engine, "global_volume", 1.0))
+        signature = self._signature_for(chain, volume)
+        with self._lock:
+            if signature != self._signature:
+                self._rebuild(chain, volume)
+                self._signature = signature
+            if not self._board:
+                wet = np.asarray(chunk, dtype=np.float32)
+            elif chunk.shape[1] <= self._block_size:
+                wet = np.asarray(self._board(chunk, self._sample_rate), dtype=np.float32)
+            else:
+                parts = [
+                    self._board(
+                        chunk[:, start : start + self._block_size], self._sample_rate
+                    )
+                    for start in range(0, chunk.shape[1], self._block_size)
+                ]
+                wet = np.concatenate(
+                    [np.asarray(part, dtype=np.float32) for part in parts], axis=1
+                )
+            self._ring.write(wet)
+            if self._writer is not None:
+                try:
+                    self._writer.write(wet)
+                    self._frames_written += wet.shape[1]
+                    elapsed = time.monotonic() - self._write_started
+                    if elapsed > 1.0 and self._frames_written > (
+                        elapsed + GUARD_SECONDS
+                    ) * self._sample_rate:
+                        self._error = (
+                            "Enregistrement wet interrompu : débit anormal "
+                            f"({self._frames_written / self._sample_rate:.1f} s "
+                            f"écrites en {elapsed:.1f} s)"
+                        )
+                        logger.error(self._error)
+                        self._close_writer()
+                except (RuntimeError, ValueError, OSError) as exc:
+                    self._error = f"Écriture de l'enregistrement wet échouée : {exc}"
+                    logger.exception(self._error)
+                    self._close_writer()
+        return wet
+
+    # ------------------------------------------------------------------
+    # Enregistrement
+    # ------------------------------------------------------------------
+    def start_recording(self, filepath: str) -> str:
+        with self._lock:
+            if self._writer is not None:
+                raise RuntimeError("Un enregistrement wet est déjà en cours")
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            writer = AudioFile(
+                filepath,
+                "w",
+                samplerate=self._sample_rate,
+                num_channels=self._channels,
+            )
+            self._writer = writer
+            self._path = filepath
+            self._error = None
+            self._frames_written = 0
+            self._write_started = time.monotonic()
+        logger.info("Enregistrement wet démarré : %s", filepath)
+        return filepath
+
+    def stop_recording(self) -> str | None:
+        with self._lock:
+            path = self._path
+            elapsed = time.monotonic() - self._write_started
+            written = self._frames_written / self._sample_rate if self._sample_rate else 0.0
+            self._close_writer()
+        logger.info(
+            "Enregistrement wet arrêté : %s (%.2f s écrites en %.2f s)",
+            path,
+            written,
+            elapsed,
+        )
+        return path
+
+    def _close_writer(self) -> None:
+        writer = self._writer
+        self._writer = None
+        self._path = None
+        if writer is not None:
+            try:
+                writer.close()
+            except (RuntimeError, ValueError, OSError):
+                logger.debug("Fermeture de l'enregistrement wet échouée", exc_info=True)
+
+
 class AudioAnalyzer:
     """Analyse l'entrée d'un ``AudioStream`` via une capture dsnoop dédiée."""
 
@@ -124,9 +353,9 @@ class AudioAnalyzer:
         self._sample_rate = float(audio_stream.sample_rate)
         self._channels = int(audio_stream.num_input_channels)
         self._ring_size = max(int(self._sample_rate * ring_seconds), 4096)
-        self._ring = np.zeros((self._channels, self._ring_size), dtype=np.float32)
-        self._write = 0
-        self._count = 0
+        self._dry = _Ring(self._channels, self._ring_size)
+        self._wet: WetPath | None = None
+        self._wet_lock = threading.Lock()
         self._data_lock = threading.Lock()
 
         self._capture: PedalboardAudioStream | None = None
@@ -222,6 +451,9 @@ class AudioAnalyzer:
 
     def close(self) -> None:
         """Arrête le thread d'analyse et ferme la capture."""
+        wet = self._wet
+        if wet is not None:
+            wet.stop_recording()
         with self._lifecycle_lock:
             if not self._running and self._capture is None and not self._offline:
                 return
@@ -257,29 +489,67 @@ class AudioAnalyzer:
             return
         if frames > self._ring_size:
             chunk = chunk[:, -self._ring_size :]
-            frames = self._ring_size
 
-        with self._data_lock:
-            end = self._write + frames
-            if end <= self._ring_size:
-                self._ring[:, self._write : end] = chunk
-            else:
-                first = self._ring_size - self._write
-                self._ring[:, self._write :] = chunk[:, :first]
-                self._ring[:, : end - self._ring_size] = chunk[:, first:]
-            self._write = end % self._ring_size
-            self._count = min(self._count + frames, self._ring_size)
+        self._dry.write(chunk)
 
-    def latest(self, window_size: int) -> np.ndarray:
+        wet = self._wet
+        if wet is not None:
+            try:
+                wet.process(chunk)
+            except Exception as exc:  # ne jamais tuer la capture
+                self._error = f"Traitement wet échoué : {exc}"
+                logger.exception(self._error)
+
+    # ------------------------------------------------------------------
+    # Signal wet (sortie simulée)
+    # ------------------------------------------------------------------
+    @property
+    def wet_enabled(self) -> bool:
+        return self._wet is not None
+
+    @property
+    def wet_recording(self) -> bool:
+        wet = self._wet
+        return wet is not None and wet.recording
+
+    def enable_wet(self) -> WetPath:
+        """Active (au besoin) la copie de la chaîne d'effets sur le signal capté."""
+        with self._wet_lock:
+            if self._wet is None:
+                self._wet = WetPath(
+                    self._stream, self._channels, self._sample_rate, self._ring_size
+                )
+            return self._wet
+
+    def disable_wet(self) -> None:
+        with self._wet_lock:
+            wet = self._wet
+            self._wet = None
+        if wet is not None:
+            wet.stop_recording()
+
+    def start_wet_recording(self, filename: str | None = None) -> str:
+        """Enregistre le signal **post-effets** (sortie simulée)."""
+        wet = self.enable_wet()
+        if filename is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"wet_{timestamp}.wav"
+        filepath = filename if os.path.isabs(filename) else os.path.join(
+            records_folder, filename
+        )
+        path = wet.start_recording(filepath)
+        return path
+
+    def stop_wet_recording(self) -> str | None:
+        wet = self._wet
+        if wet is None:
+            return None
+        return wet.stop_recording()
+
+    def latest(self, window_size: int, *, wet: bool = False) -> np.ndarray:
         """Retourne les ``window_size`` derniers frames, zéro-paddés à gauche."""
-        size = max(int(window_size), 1)
-        output = np.zeros((self._channels, size), dtype=np.float32)
-        with self._data_lock:
-            available = min(self._count, size)
-            if available:
-                indices = (np.arange(self._write - available, self._write)) % self._ring_size
-                output[:, -available:] = self._ring[:, indices]
-        return output
+        ring = self._wet.ring if wet and self._wet is not None else self._dry
+        return ring.latest(window_size)
 
     # ------------------------------------------------------------------
     # Analyses
@@ -302,17 +572,29 @@ class AudioAnalyzer:
             }
         return None
 
-    def analyze_rms(self, index: int = 0, window_size: int = 2048) -> dict[str, Any]:
+    def _wet_unavailable(self, index: int) -> dict[str, Any]:
+        return {
+            "index": index,
+            "active": False,
+            "error": "Signal wet non activé (appeler enable_wet / wet=True)",
+        }
+
+    def analyze_rms(
+        self, index: int = 0, window_size: int = 2048, *, wet: bool = False
+    ) -> dict[str, Any]:
         """Niveau RMS / peak sur les derniers ``window_size`` frames."""
         error = self._check_index(index)
         if error is not None:
             return error
+        if wet and self._wet is None:
+            return self._wet_unavailable(index)
 
-        data = self.latest(window_size)[index].astype(np.float64)
+        data = self.latest(window_size, wet=wet)[index].astype(np.float64)
         rms = float(np.sqrt(np.mean(data * data))) if data.size else 0.0
         peak = float(np.max(np.abs(data))) if data.size else 0.0
         return {
             "index": index,
+            "source": "wet" if wet else "dry",
             "rms_level": rms,
             "rms_db": _db(rms),
             "peak": peak,
@@ -322,18 +604,21 @@ class AudioAnalyzer:
             "active": True,
         }
 
-    def analyze_pitch(self, index: int = 0) -> dict[str, Any]:
+    def analyze_pitch(self, index: int = 0, *, wet: bool = False) -> dict[str, Any]:
         """Fréquence fondamentale (autocorrélation) sur ~100 ms."""
         error = self._check_index(index)
         if error is not None:
             return error
+        if wet and self._wet is None:
+            return self._wet_unavailable(index)
 
         window = int(min(self._sample_rate * 0.1, self._ring_size))
-        data = self.latest(window)[index]
+        data = self.latest(window, wet=wet)[index]
         frequency, confidence = detect_pitch(data, self._sample_rate)
         midi = midi_note(frequency)
         return {
             "index": index,
+            "source": "wet" if wet else "dry",
             "pitch_detected": float(frequency) if frequency else 0.0,
             "frequency_hz": float(frequency) if frequency else None,
             "midi_note": midi,
@@ -344,16 +629,21 @@ class AudioAnalyzer:
             "active": True,
         }
 
-    def analyze_frequency(self, index: int = 0, fft_size: int = 2048) -> dict[str, Any]:
+    def analyze_frequency(
+        self, index: int = 0, fft_size: int = 2048, *, wet: bool = False
+    ) -> dict[str, Any]:
         """Spectre FFT : fréquence dominante, centroïde et bandes d'énergie."""
         error = self._check_index(index)
         if error is not None:
             return error
+        if wet and self._wet is None:
+            return self._wet_unavailable(index)
 
         size = max(int(fft_size), 32)
-        data = self.latest(size)[index].astype(np.float64)
+        data = self.latest(size, wet=wet)[index].astype(np.float64)
         result: dict[str, Any] = {
             "index": index,
+            "source": "wet" if wet else "dry",
             "fft_size": size,
             "window": "hann",
             "sample_rate": self._sample_rate,
@@ -423,17 +713,22 @@ class AudioAnalyzer:
         )
         return result
 
-    def analyze_audio_profile(self, index: int = 0) -> dict[str, Any]:
+    def analyze_audio_profile(
+        self, index: int = 0, *, wet: bool = False
+    ) -> dict[str, Any]:
         """Profil complet : RMS, pitch, note MIDI, fréquence dominante."""
         error = self._check_index(index)
         if error is not None:
             return error
+        if wet and self._wet is None:
+            return self._wet_unavailable(index)
 
-        rms_result = self.analyze_rms(index)
-        pitch_result = self.analyze_pitch(index)
-        frequency_result = self.analyze_frequency(index)
+        rms_result = self.analyze_rms(index, wet=wet)
+        pitch_result = self.analyze_pitch(index, wet=wet)
+        frequency_result = self.analyze_frequency(index, wet=wet)
         return {
             "index": index,
+            "source": "wet" if wet else "dry",
             "rms": rms_result.get("rms_level"),
             "rms_db": rms_result.get("rms_db"),
             "peak_db": rms_result.get("peak_db"),

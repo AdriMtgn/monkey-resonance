@@ -157,21 +157,43 @@ Les outils d'analyse de `main` sont portés sur Pedalboard, sans pyo :
 
 | Tool | Résultat |
 | --- | --- |
-| `get_rms_level(index, window_size)` | RMS, peak, dBFS, présence de signal |
-| `get_pitch_info(index)` | fréquence (autocorrélation), note MIDI, nom, confiance |
-| `get_frequency_analysis(index, fft_size)` | dominante, centroïde, bandes, 5 pics |
-| `get_audio_profile(index)` | RMS + pitch + note + dominante |
+| `get_rms_level(index, window_size, wet)` | RMS, peak, dBFS, présence de signal |
+| `get_pitch_info(index, wet)` | fréquence (autocorrélation), note MIDI, nom, confiance |
+| `get_frequency_analysis(index, fft_size, wet)` | dominante, centroïde, bandes, 5 pics |
+| `get_audio_profile(index, wet)` | RMS + pitch + note + dominante |
 | `set_output_volume(index, volume)` | gain de sortie (les 2 canaux) |
+| `save_input_effects(index, name)` | sauvegarde la chaîne dans `saved_effects/<name>.json` |
+| `load_input_effects(index, name)` | recharge une chaîne sauvegardée |
+| `start_input_recording(index, filename, wet)` | enregistre l'entrée (wet=false) ou la sortie (wet=true) |
+| `stop_input_recording(index, wet)` | arrête l'enregistrement correspondant |
+
+### Signal dry et signal wet
+
+Pedalboard ne permet pas de capter la sortie du callback C++. Deux signaux
+sont donc disponibles :
+
+- **dry** (`wet=false`, défaut) : l'entrée brute, captée par une dsnoop
+  dédiée — c'est ce qu'enregistre `start_input_recording` ;
+- **wet** (`wet=true`) : la même entrée **rejouée dans une copie de la chaîne
+  d'effets** (`WetPath`, mêmes plugins/paramètres/gain de sortie). Les blocs
+  sont découpés à `buffer_size` (128 frames), exactement comme le callback
+  audio : sur une prise de 40 s, le signal wet est **bit-à-bit identique** à un
+  rendu hors-ligne effectué avec ce même découpage (corrélation 1.0, écart
+  max 0.0).
+
+C'est donc la sortie au sens « ce qui part vers la carte », calculée une
+seconde fois côté Python. Coût : la chaîne est traitée deux fois quand le wet
+est activé (activation à la demande, désactivable en redémarrant le process).
 
 `index` désigne le **canal d'entrée** (0 = gauche, 1 = droite). Pedalboard
 n'expose pas de gain par canal : `set_output_volume` applique le gain au
 stream stéréo, l'index est conservé pour compatibilité.
 
-L'analyseur ouvre une **troisième capture dsnoop** (stream principal +
-enregistrement + analyse) et alimente un ring buffer de 4 s. Le seuil de
-signal est −60 dBFS (bruit de fond de l'AudioBox ignoré). Pitch : 50–2000 Hz.
-Validé live : les 3 captures coexistent, enregistrement de 24 576 frames
-pendant l'analyse.
+L'analyseur ouvre une **capture dsnoop dédiée** (stream principal +
+enregistrement + analyse) et alimente un ring buffer de 4 s (dry et wet). Le
+seuil de signal est −60 dBFS (bruit de fond de l'AudioBox ignoré). Pitch :
+50–2000 Hz. Validé live : les 3 captures coexistent, enregistrement de
+24 576 frames pendant l'analyse.
 
 ## MCP en HTTP streamable (MCP 2.x)
 

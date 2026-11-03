@@ -16,10 +16,15 @@ class FakeStream:
     sample_rate = 48000.0
     num_input_channels = 2
     record_device = "fake-dsnoop"
+    buffer_size = 128
+
+    def __init__(self, effects_chain=None, global_volume: float = 1.0) -> None:
+        self.effects_chain = list(effects_chain or [])
+        self.global_volume = global_volume
 
 
-def make_analyzer(**kwargs) -> AudioAnalyzer:
-    return AudioAnalyzer(FakeStream(), open_capture=False, **kwargs)
+def make_analyzer(engine: FakeStream | None = None, **kwargs) -> AudioAnalyzer:
+    return AudioAnalyzer(engine or FakeStream(), open_capture=False, **kwargs)
 
 
 def sine(frequency: float = 440.0, amplitude: float = 0.5, seconds: float = 0.2):
@@ -159,3 +164,94 @@ def test_latest_pads_with_zeros():
     assert latest.shape == (2, 500)
     assert np.all(latest[:, :400] == 0.0)
     assert np.all(latest[:, 400:] == 1.0)
+
+
+# ----------------------------------------------------------------------
+# Signal wet (post-effets)
+# ----------------------------------------------------------------------
+def test_wet_requires_enable():
+    analyzer = make_analyzer()
+    analyzer.feed(sine(440.0))
+
+    result = analyzer.analyze_rms(0, wet=True)
+    assert result["active"] is False
+    assert "wet" in result["error"]
+
+
+def test_wet_replays_gain_chain():
+    engine = FakeStream(
+        effects_chain=[{"effect": "pedalboard.Gain", "params": {"gain_db": -6.0}}]
+    )
+    analyzer = make_analyzer(engine)
+    analyzer.enable_wet()
+    analyzer.feed(sine(amplitude=0.5, seconds=0.3))
+
+    dry = analyzer.analyze_rms(0, window_size=4800)
+    wet = analyzer.analyze_rms(0, window_size=4800, wet=True)
+
+    assert dry["source"] == "dry"
+    assert wet["source"] == "wet"
+    assert wet["rms_level"] == pytest.approx(dry["rms_level"] * 0.5, rel=0.02)
+    assert wet["peak"] == pytest.approx(dry["peak"] * 0.5, rel=0.02)
+
+
+def test_wet_follows_global_volume():
+    engine = FakeStream(global_volume=0.5)
+    analyzer = make_analyzer(engine)
+    analyzer.enable_wet()
+    analyzer.feed(sine(amplitude=0.4, seconds=0.3))
+
+    dry = analyzer.analyze_rms(0, window_size=4800)
+    wet = analyzer.analyze_rms(0, window_size=4800, wet=True)
+    assert wet["rms_level"] == pytest.approx(dry["rms_level"] * 0.5, rel=0.02)
+
+
+def test_wet_chain_rebuilds_on_change():
+    engine = FakeStream(
+        effects_chain=[{"effect": "pedalboard.Gain", "params": {"gain_db": -6.0}}]
+    )
+    analyzer = make_analyzer(engine)
+    analyzer.enable_wet()
+    analyzer.feed(sine(0.4, seconds=0.1))
+
+    engine.effects_chain = [{"effect": "pedalboard.Gain", "params": {"gain_db": 0.0}}]
+    analyzer.feed(sine(0.4, seconds=0.1))
+
+    dry = analyzer.analyze_rms(0, window_size=2400)
+    wet = analyzer.analyze_rms(0, window_size=2400, wet=True)
+    assert wet["rms_level"] == pytest.approx(dry["rms_level"], rel=0.02)
+
+
+def test_wet_recording_writes_processed_audio(tmp_path):
+    from pedalboard.io import AudioFile
+
+    engine = FakeStream(
+        effects_chain=[{"effect": "pedalboard.Gain", "params": {"gain_db": -6.0}}]
+    )
+    analyzer = make_analyzer(engine)
+    analyzer.enable_wet()
+
+    target = tmp_path / "wet.wav"
+    path = analyzer.start_wet_recording(str(target))
+    assert path == str(target)
+
+    analyzer.feed(sine(amplitude=0.5, seconds=0.2))
+    assert analyzer.wet_recording is True
+
+    stopped = analyzer.stop_wet_recording()
+    assert stopped == str(target)
+    assert analyzer.wet_recording is False
+
+    with AudioFile(str(target)) as recording:
+        assert recording.frames == 9600
+        assert recording.samplerate == pytest.approx(48000.0)
+        data = recording.read(recording.frames)
+    rms = float(np.sqrt(np.mean(data**2)))
+    assert rms == pytest.approx(0.5 / np.sqrt(2) / 2, rel=0.03)
+
+
+def test_wet_recording_requires_no_file_for_dry():
+    analyzer = make_analyzer()
+    analyzer.feed(sine(440.0))
+    assert analyzer.stop_wet_recording() is None
+

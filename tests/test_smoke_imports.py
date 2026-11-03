@@ -49,6 +49,8 @@ def test_mcp_module_defines_server():
         "list_inputs",
         "mute_input",
         "add_effect_to_input",
+        "save_input_effects",
+        "load_input_effects",
         "set_output_volume",
         "get_rms_level",
         "get_pitch_info",

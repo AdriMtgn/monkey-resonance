@@ -19,13 +19,15 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `add_effect_to_input(index, effect_path, params, position)` | Ajoute un effet à une entrée |
 | `update_effect(index, effect_path, params, position)` | Met à jour un effet |
 | `remove_effect_from_input(index, effect_index)` | Supprime un effet de la chaîne |
-| `start_input_recording(index, filename)` | Démarrer l'enregistrement audio |
-| `stop_input_recording(index)` | Arrêter l'enregistrement |
+| `save_input_effects(index, name)` | Sauvegarde la chaîne dans un JSON |
+| `load_input_effects(index, name)` | Recharge une chaîne sauvegardée |
+| `start_input_recording(index, filename, wet)` | Enregistre l'entrée brute (défaut) ou la sortie effet (`wet=true`) |
+| `stop_input_recording(index, wet)` | Arrête l'enregistrement correspondant |
 | `list_inputs_outputs()` | Liste des devices audio d'entrée/sortie |
 | `set_output_volume(index, volume)` | Volume de sortie (gain stéréo) |
-| `get_rms_level(index, window_size)` | Niveau RMS / peak / dBFS |
-| `get_pitch_info(index)` | Pitch, note MIDI, confiance |
-| `get_frequency_analysis(index, fft_size)` | Spectre FFT, dominante, bandes |
+| `get_rms_level(index, window_size, wet)` | Niveau RMS / peak / dBFS |
+| `get_pitch_info(index, wet)` | Pitch, note MIDI, confiance |
+| `get_frequency_analysis(index, fft_size, wet)` | Spectre FFT, dominante, bandes |
 | `get_audio_profile(index)` | Profil complet RMS + pitch + spectre |
 | `global_status()` | Vérifie si le système audio fonctionne |
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sys
@@ -14,6 +15,9 @@ except ImportError:  # pragma: no cover - dépendances optionnelles
     _analyzer_available = False
 
 logger = logging.getLogger(__name__)
+
+# Temps laissé au ring buffer wet pour se remplir avant une lecture/analyse.
+WET_WARMUP_S = 0.4
 
 # Allow host/port configuration via environment variables so the
 # MCP's HTTP transport can be exposed (for testing tools/clients).
@@ -278,8 +282,55 @@ async def remove_effect_from_input(index: int, effect_index: int) -> dict:
 
 
 @mcp.tool()
-async def start_input_recording(index: int, filename: str | None = None) -> dict:
-    """Start recording on the input at `index`. Returns filepath or error."""
+async def save_input_effects(index: int, name: str) -> dict:
+    """Save the effect chain of the input at `index` as `saved_effects/<name>.json`."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[index]
+    except Exception:
+        return {"error": "invalid index"}
+    try:
+        filepath = inp.save_effects(name)
+        return {"result": filepath}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def load_input_effects(index: int, name: str) -> dict:
+    """Load `saved_effects/<name>.json` into the effect chain of the input at `index`."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[index]
+    except Exception:
+        return {"error": "invalid index"}
+    try:
+        inp.load_effects(name)
+        return {"result": "effects_loaded", "effects": inp.effects_chain}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def start_input_recording(
+    index: int, filename: str | None = None, wet: bool = False
+) -> dict:
+    """Start recording on the input at `index`. Returns filepath or error.
+
+    ``wet=True`` enregistre le signal **après les effets** (sortie simulée) :
+    la chaîne courante est rejouée sur l'entrée captée par l'analyseur, puis
+    écrite dans le WAV. ``wet=False`` (défaut) enregistre l'entrée brute.
+    """
     main = sys.modules.get("__main__")
     if main is None:
         return {"error": "__main__ not available"}
@@ -290,15 +341,31 @@ async def start_input_recording(index: int, filename: str | None = None) -> dict
         inp = inputs[index]
     except Exception:
         return {"error": "invalid index"}
+
+    if wet:
+        if not _analyzer_available:
+            return {"error": "Audio analyzer not available"}
+        analyzer = get_analyzer()
+        if analyzer is None:
+            return {"error": "Analyzer not initialized (no audio input)"}
+        try:
+            analyzer.enable_wet()
+            # Laisse le ring buffer wet se remplir avant d'ouvrir le fichier.
+            await asyncio.sleep(WET_WARMUP_S)
+            filepath = analyzer.start_wet_recording(filename)
+            return {"result": filepath, "source": "wet"}
+        except Exception as e:
+            return {"error": str(e)}
+
     try:
         filepath = inp.start_recording(filename) if hasattr(inp, 'start_recording') else None
-        return {"result": filepath}
+        return {"result": filepath, "source": "dry"}
     except Exception as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
-async def stop_input_recording(index: int) -> dict:
+async def stop_input_recording(index: int, wet: bool = False) -> dict:
     """Stop recording on the input at `index`. Returns filepath or error."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -310,9 +377,22 @@ async def stop_input_recording(index: int) -> dict:
         inp = inputs[index]
     except Exception:
         return {"error": "invalid index"}
+
+    if wet:
+        if not _analyzer_available:
+            return {"error": "Audio analyzer not available"}
+        analyzer = get_analyzer()
+        if analyzer is None:
+            return {"error": "Analyzer not initialized (no audio input)"}
+        try:
+            filepath = analyzer.stop_wet_recording()
+            return {"result": filepath, "source": "wet"}
+        except Exception as e:
+            return {"error": str(e)}
+
     try:
         filepath = inp.stop_recording() if hasattr(inp, 'stop_recording') else None
-        return {"result": filepath}
+        return {"result": filepath, "source": "dry"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -346,7 +426,7 @@ async def set_output_volume(index: int, volume: float) -> dict:
         return {"error": str(e)}
 
 
-def _analyzer_reply(kind: str, index: int, **kwargs: object) -> dict:
+def _analyzer_reply(kind: str, index: int, *, wet: bool = False, **kwargs: object) -> dict:
     """Appelle l'analyseur global et emballe le résultat comme l'ancien MCP."""
     if not _analyzer_available:
         return {"error": "Audio analyzer not available"}
@@ -355,40 +435,75 @@ def _analyzer_reply(kind: str, index: int, **kwargs: object) -> dict:
         return {"error": "Analyzer not initialized (no audio input)"}
     try:
         if kind == "profile":
-            return {"profile": analyzer.analyze_audio_profile(index)}
+            return {"profile": analyzer.analyze_audio_profile(index, wet=wet)}
         if kind == "rms":
-            return {"rms": analyzer.analyze_rms(index, **kwargs)}
+            return {"rms": analyzer.analyze_rms(index, wet=wet, **kwargs)}
         if kind == "pitch":
-            return {"pitch": analyzer.analyze_pitch(index)}
+            return {"pitch": analyzer.analyze_pitch(index, wet=wet)}
         if kind == "frequency":
-            return {"frequency": analyzer.analyze_frequency(index, **kwargs)}
+            return {"frequency": analyzer.analyze_frequency(index, wet=wet, **kwargs)}
         return {"error": f"unknown analysis: {kind}"}
     except Exception as e:
         return {"error": str(e)}
 
 
-@mcp.tool()
-async def get_audio_profile(index: int) -> dict:
-    """Get a comprehensive audio profile (RMS, pitch, MIDI note, spectrum)."""
-    return _analyzer_reply("profile", index)
+async def _prepare_wet() -> dict | None:
+    """Active le signal wet et laisse le ring buffer se remplir."""
+    if not _analyzer_available:
+        return {"error": "Audio analyzer not available"}
+    analyzer = get_analyzer()
+    if analyzer is None:
+        return {"error": "Analyzer not initialized (no audio input)"}
+    analyzer.enable_wet()
+    await asyncio.sleep(WET_WARMUP_S)
+    return None
 
 
 @mcp.tool()
-async def get_rms_level(index: int, window_size: int = 2048) -> dict:
-    """Get the RMS / peak level for an input channel."""
-    return _analyzer_reply("rms", index, window_size=window_size)
+async def get_audio_profile(index: int, wet: bool = False) -> dict:
+    """Get a comprehensive audio profile (RMS, pitch, MIDI note, spectrum).
+
+    ``wet=True`` analyse le signal **après les effets** (sortie simulée),
+    ``wet=False`` l'entrée brute.
+    """
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("profile", index, wet=wet)
 
 
 @mcp.tool()
-async def get_pitch_info(index: int) -> dict:
-    """Get the detected pitch, MIDI note and confidence for an input."""
-    return _analyzer_reply("pitch", index)
+async def get_rms_level(index: int, window_size: int = 2048, wet: bool = False) -> dict:
+    """Get the RMS / peak level for an input channel (``wet=True``: post-effets)."""
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("rms", index, wet=wet, window_size=window_size)
 
 
 @mcp.tool()
-async def get_frequency_analysis(index: int, fft_size: int = 2048) -> dict:
-    """Get FFT analysis (dominant frequency, centroid, bands, peaks)."""
-    return _analyzer_reply("frequency", index, fft_size=fft_size)
+async def get_pitch_info(index: int, wet: bool = False) -> dict:
+    """Get the detected pitch, MIDI note and confidence (``wet=True``: post-effets)."""
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("pitch", index, wet=wet)
+
+
+@mcp.tool()
+async def get_frequency_analysis(index: int, fft_size: int = 2048, wet: bool = False) -> dict:
+    """Get FFT analysis (dominant frequency, centroid, bands, peaks).
+
+    ``wet=True`` analyse le signal après les effets.
+    """
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("frequency", index, wet=wet, fft_size=fft_size)
 
 
 def start_mcp():
