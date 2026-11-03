@@ -222,6 +222,27 @@ def test_wet_chain_rebuilds_on_change():
     assert wet["rms_level"] == pytest.approx(dry["rms_level"], rel=0.02)
 
 
+def test_wet_blocks_match_whole_file_processing():
+    """Les blocs doivent être traités sans reset, sinon clics tous les 128 frames."""
+    from pedalboard import HighpassFilter, Pedalboard
+
+    engine = FakeStream(
+        effects_chain=[
+            {"effect": "pedalboard.HighpassFilter", "params": {"cutoff_frequency_hz": 300}}
+        ]
+    )
+    analyzer = make_analyzer(engine)
+    analyzer.enable_wet()
+
+    signal = sine(82.0, amplitude=0.5, seconds=0.5)
+    for start in range(0, signal.shape[1], 128):
+        analyzer.feed(signal[:, start : start + 128])
+
+    wet = analyzer.latest(signal.shape[1], wet=True)
+    reference = Pedalboard([HighpassFilter(cutoff_frequency_hz=300)])(signal, 48000.0)
+    assert np.allclose(wet[:, -reference.shape[1] :], reference, atol=1e-6)
+
+
 def test_wet_recording_writes_processed_audio(tmp_path):
     from pedalboard.io import AudioFile
 

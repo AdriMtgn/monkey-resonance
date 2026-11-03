@@ -176,10 +176,11 @@ sont donc disponibles :
   dédiée — c'est ce qu'enregistre `start_input_recording` ;
 - **wet** (`wet=true`) : la même entrée **rejouée dans une copie de la chaîne
   d'effets** (`WetPath`, mêmes plugins/paramètres/gain de sortie). Les blocs
-  sont découpés à `buffer_size` (128 frames), exactement comme le callback
-  audio : sur une prise de 40 s, le signal wet est **bit-à-bit identique** à un
-  rendu hors-ligne effectué avec ce même découpage (corrélation 1.0, écart
-  max 0.0).
+  sont traités avec `reset=False` et découpés à `buffer_size` (128 frames) :
+  indispensable, car `Pedalboard()` réinitialise l'état des filtres à chaque
+  appel (un clic tous les 128 échantillons sinon). Sur une prise de 40 s, le
+  signal wet est **bit-à-bit identique** au traitement du fichier entier
+  (corrélation 1.0, écart max 0.0, centroïde 189 Hz dans les deux cas).
 
 C'est donc la sortie au sens « ce qui part vers la carte », calculée une
 seconde fois côté Python. Coût : la chaîne est traitée deux fois quand le wet

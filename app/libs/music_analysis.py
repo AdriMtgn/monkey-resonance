@@ -179,8 +179,14 @@ class WetPath:
 
     Pedalboard n'expose pas la sortie de son callback C++. On rejoue donc la
     chaîne courante (mêmes plugins, mêmes paramètres, même gain de sortie) sur
-    les échantillons dry : le résultat est le signal post-effets, à quelques
-    millisecondes près, et il peut être enregistré et analysé.
+    les échantillons dry : le résultat est le signal post-effets, et il peut
+    être enregistré et analysé.
+
+    Les blocs sont traités avec ``reset=False`` et découpés à la taille du
+    buffer du moteur (128 frames) : c'est indispensable, car ``Pedalboard()``
+    réinitialise l'état des filtres à chaque appel et produirait un clic tous
+    les 128 échantillons. Avec ``reset=False``, le résultat est bit-à-bit
+    identique au traitement du fichier entier.
     """
 
     def __init__(self, engine: Any, channels: int, sample_rate: float, ring_size: int) -> None:
@@ -259,11 +265,16 @@ class WetPath:
             if not self._board:
                 wet = np.asarray(chunk, dtype=np.float32)
             elif chunk.shape[1] <= self._block_size:
-                wet = np.asarray(self._board(chunk, self._sample_rate), dtype=np.float32)
+                wet = np.asarray(
+                    self._board.process(chunk, self._sample_rate, reset=False),
+                    dtype=np.float32,
+                )
             else:
                 parts = [
-                    self._board(
-                        chunk[:, start : start + self._block_size], self._sample_rate
+                    self._board.process(
+                        chunk[:, start : start + self._block_size],
+                        self._sample_rate,
+                        reset=False,
                     )
                     for start in range(0, chunk.shape[1], self._block_size)
                 ]
