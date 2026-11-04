@@ -1,5 +1,7 @@
 """Tests de l'analyseur audio (numpy, sans périphérique)."""
 
+import time
+
 import numpy as np
 import pytest
 from libs.music_analysis import (
@@ -21,6 +23,24 @@ class FakeStream:
     def __init__(self, effects_chain=None, global_volume: float = 1.0) -> None:
         self.effects_chain = list(effects_chain or [])
         self.global_volume = global_volume
+
+
+class FakeFedStream(FakeStream):
+    """Faux moteur exposant des listeners (mode alimenté par le moteur)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.listeners: list = []
+
+    def add_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def remove_listener(self, listener) -> None:
+        self.listeners.remove(listener)
+
+    def emit(self, dry: np.ndarray, wet: np.ndarray) -> None:
+        for listener in list(self.listeners):
+            listener(dry, wet)
 
 
 def make_analyzer(engine: FakeStream | None = None, **kwargs) -> AudioAnalyzer:
@@ -275,4 +295,35 @@ def test_wet_recording_requires_no_file_for_dry():
     analyzer = make_analyzer()
     analyzer.feed(sine(440.0))
     assert analyzer.stop_wet_recording() is None
+
+
+def test_analyzer_is_fed_by_engine_with_actual_wet():
+    """Le listener du moteur fournit dry + wet, sans capture secondaire."""
+    engine = FakeFedStream()
+    analyzer = AudioAnalyzer(engine, open_capture=False)
+    analyzer.start()
+    try:
+        analyzer.enable_wet()
+        dry = sine(440.0, amplitude=0.5, seconds=0.2)
+        wet = dry * 0.25
+        engine.emit(dry, wet)
+
+        deadline = time.monotonic() + 2.0
+        while analyzer._dry.count < dry.shape[1] and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        assert analyzer.running
+        assert analyzer._dry.count >= dry.shape[1]
+        assert analyzer._wet.ring.count >= dry.shape[1]
+        dry_rms = analyzer.analyze_rms(0, window_size=dry.shape[1])
+        wet_rms = analyzer.analyze_rms(
+            0, window_size=dry.shape[1], wet=True
+        )
+        assert wet_rms["rms_level"] == pytest.approx(
+            dry_rms["rms_level"] * 0.25, rel=0.02
+        )
+    finally:
+        analyzer.close()
+
+    assert engine.listeners == []
 

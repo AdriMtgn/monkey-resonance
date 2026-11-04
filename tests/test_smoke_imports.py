@@ -18,7 +18,8 @@ def test_import_audio_stream():
 
     for method in ("add_effect", "remove_effect", "update_effect", "start", "stop",
                    "close", "start_recording", "stop_recording", "save_effects",
-                   "load_effects"):
+                   "load_effects", "play_recording", "stop_playback",
+                   "playback_status", "add_listener", "remove_listener"):
         assert hasattr(AudioStream, method), f"AudioStream.{method} manquant"
 
 
@@ -56,4 +57,8 @@ def test_mcp_module_defines_server():
         "get_pitch_info",
         "get_frequency_analysis",
         "get_audio_profile",
+        "list_recordings",
+        "play_recording",
+        "stop_playback",
+        "playback_status",
     } <= tools

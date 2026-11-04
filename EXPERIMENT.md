@@ -2,8 +2,9 @@
 
 Branche `exp/spotify-pedalboard`, basée sur `main` @ `c19c2c8`.
 
-État au 2026-11-01 : image `monkey-resonance-pedalboard:latest` reconstruite,
-tests hors-ligne et live validés (voir ci-dessous).
+État au 2026-11-04 : image `monkey-resonance-pedalboard:latest` reconstruite,
+tests hors-ligne et live validés (voir ci-dessous). Capture directe à 128
+frames, looper et analyse alimentés par le moteur.
 
 ## Objectif
 
@@ -36,11 +37,9 @@ des mesures, puis un container équivalent `monkey-resonance-pyo` a été relanc
 (`docker compose run -d --service-ports --name monkey-resonance-pyo mkr python
 main.py --with_mcp`).
 
-- Entrée résolue automatiquement sur le device **dsnoop** de l'AudioBox
-  (`Direct sample snooping device`), sortie sur le device matériel direct
-  (`Direct hardware device without any conversions`). Le dsnoop permet une
-  seconde capture simultanée pour l'enregistrement ; la sortie évite
-  PipeWire/Pulse.
+- Entrée **et** sortie résolues automatiquement sur le device matériel direct
+  de l'AudioBox (`Direct hardware device without any conversions`), qui évite
+  PipeWire/Pulse et la période du dsnoop (1024 frames).
 - `RUN_AUDIO_TESTS=1 pytest tests/test_audio_box_detection.py` : **5 tests
   passés** (ouverture, mute, sample rate, buffer, enregistrement live).
 - `python detect-sc.py --test` (sortie muette) : 48 kHz, **128 frames**,
@@ -67,19 +66,27 @@ documenté pour la latence minimale.
 ci-dessus est la latence logicielle du buffer ; `AudioStream` n'expose pas la
 latence matérielle de JUCE.
 
-**Enregistrement** : Pedalboard ne remplit pas le FIFO de capture quand le
-stream a aussi une sortie. On ouvre donc une **seconde capture input-only sur
-le dsnoop** pendant que le stream principal tourne. Elle enregistre l'entrée
-brute (pre-effets), pas la sortie. Testé live : 2 captures dsnoop simultanées,
-0 frame perdue sur 3 s et sur 1,5 s via l'API.
+**Enregistrement et analyse** : Pedalboard ne remplit pas le FIFO de capture
+quand le stream a aussi une sortie, et la carte est désormais ouverte en
+exclusif sur le device matériel direct. L'enregistrement et l'analyse ne
+peuvent donc plus ouvrir leur propre capture : ils sont **alimentés par le
+moteur** (listener + file bornée). Le thread audio ne fait qu'un
+`put_nowait` : si le consommateur est en retard, le bloc est ignoré au lieu de
+bloquer le jeu. C'est ce qui garantit qu'une boucle ou une analyse n'ajoute
+**aucune latence** au live.
+
+Latence logicielle mesurée : capture **128 frames (2,67 ms)** + sortie
+**128 frames (2,67 ms)** ≈ **5,4 ms** aller-retour, sans surcoût quand une
+boucle joue (le mix se fait dans le même bloc). L'ancien moteur C++ duplex
+était à 2,7 ms, mais son entrée dsnoop était déjà à ~21 ms.
 
 ## Configuration
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `AUDIO_INPUT_DEVICE` | auto (dsnoop AudioBox) | nom exact, sous-chaîne ou index |
+| `AUDIO_INPUT_DEVICE` | auto (AudioBox direct) | nom exact, sous-chaîne ou index |
 | `AUDIO_OUTPUT_DEVICE` | auto (AudioBox direct) | idem |
-| `AUDIO_RECORD_DEVICE` | = entrée | capture de l'enregistrement (dsnoop conseillé) |
+| `AUDIO_RECORD_DEVICE` | = entrée | conservé ; l'enregistrement vient du moteur |
 | `AUDIO_SAMPLE_RATE` | `48000` | sample rate |
 | `AUDIO_BUFFER_SIZE` | `128` | frames par buffer |
 | `AUDIO_INPUT_CHANNELS` | `2` | canaux d'entrée |
@@ -95,7 +102,7 @@ brute (pre-effets), pas la sortie. Testé live : 2 captures dsnoop simultanées,
 | `pyo.Input(i)` | `AudioStream(input_device_name=..., output_device_name=...)` |
 | `pyo.Chorus`, `Delay`, `Reverb`… | `Chorus`, `Delay`, `Reverb`… |
 | `CustomDelay(pyo.PyoObject)` | `Delay` natif, ou plugin VST3 |
-| `pyo.Record(output)` | 2e capture dsnoop (entrée brute, **pas** la sortie post-effets) |
+| `pyo.Record(output)` | tap du moteur (file bornée + listener), dry ou wet post-effets |
 | Chaîne `PyoObject` / `setInput` | `Pedalboard([...])` mutable (`append`, `del`, paramètres) |
 | Serveur pyo + `s.boot()` | pas d'équivalent : le stream gère le device |
 
@@ -104,46 +111,53 @@ brute (pre-effets), pas la sortie. Testé live : 2 captures dsnoop simultanées,
 1. **Pas de synthèse** : si l'app doit générer des sons (et pas seulement
    traiter l'entrée), pyo reste nécessaire. Aujourd'hui `main.py` ne crée que
    des `Input`, donc le périmètre est compatible.
-2. **Enregistrement post-effets — limite assumée** : la capture secondaire
-   dsnoop enregistre l'entrée brute, pas la sortie post-effets. Un tap de sortie
-   nécessiterait un moteur externe (JACK/ALSA loopback) ; `pedalboard.Plugin`
-   ne peut pas être sous-classé en Python.
-3. **Latence** : réglable par `AUDIO_BUFFER_SIZE` ; mesurée jusqu'à 64 frames
-   (2,67 ms A/R logiciel) sans frame perdue sur l'AudioBox. Pas de garantie
-   temps réel dure (JUCE + thread interne), d'où le défaut à 128 frames.
+2. **Enregistrement post-effets** : le dry est capté par le moteur, et le wet
+   est la **sortie réelle post-effets** fournie par le même listener (avant mix
+   de la boucle). Plus besoin de rejouer la chaîne ni d'ouvrir une capture
+   secondaire.
+3. **Latence** : un bloc de capture (128 frames, 2,7 ms) + un bloc de lecture
+   (128 frames, 2,7 ms) ≈ **5,4 ms** logiciels. La capture directe délivre le
+   débit réel à 128 frames, contrairement au dsnoop (17 % à 128, calé sur sa
+   période de 1024). La boucle est mixée dans le même bloc : elle n'ajoute
+   **aucune** latence pendant le jeu.
 4. **Licence GPLv3** : le repo n'a pas de LICENSE. Si une diffusion non-GPL
    est prévue, c'est bloquant.
 5. **Contrat `sys.modules["__main__"]` — conservé** : `main.py` expose
    `AudioStream`, `audio_devices` et `inputs`. L'adaptateur garde l'API
    (`add_effect`, `remove_effect`, `update_effect`, `start`, `stop`, `close`,
    `save_effects`, `load_effects`, `start_recording`, `stop_recording`,
-   `global_volume`).
-6. **Thread-safety** : les mutations de chaîne sont sérialisées par un verrou
-   côté control thread ; JUCE applique les changements via son propre polling.
-   Ne pas muter la chaîne directement depuis FastAPI/MCP : passer par
-   `AudioStream`.
+   `global_volume`, `play_recording`, `stop_playback`).
+6. **Thread-safety** : le traitement des effets et le mixage tournent dans un
+   thread audio dédié ; les mutations de chaîne sont sérialisées par un verrou
+   et ne font que remplacer l'objet `Pedalboard` utilisé au bloc suivant.
+   L'enregistrement écrit dans une file bornée consommée par un thread dédié :
+   le thread audio ne fait qu'un `put_nowait`, jamais d'I/O disque.
 7. **Formats sauvegardés — compatibilité** : `saved_effects/*.json` (chemins
    pyo) est traduit par `libs/effect_lib.py` ; les nouvelles sauvegardes
    portent `"engine": "pedalboard"`. Les formats liste (ancien) et dict
    (nouveau) sont acceptés.
 8. **Un seul stream stéréo** : Pedalboard n'expose pas de chaîne par canal ;
    `inputs` contient donc un unique `AudioStream` (index 0) en 2 in / 2 out.
-   L'enregistrement ouvre en plus une capture input-only dsnoop (pas exposée
-   dans `inputs`).
+   Le moteur ouvre en fait **deux** streams Pedalboard (capture seule +
+   lecture seule) : un stream duplex ignore le buffer d'écriture, donc le
+   mixage live + boucle se fait côté Python. L'enregistrement et l'analyse sont
+   des listeners du moteur, pas des captures supplémentaires.
 
 ## Implémentation
 
 - `app/libs/audio_devices.py` : découverte JUCE, résolution par nom/index,
-  entrée auto sur le device partageable `dsnoop`, sortie auto sur le device
-  matériel direct, configuration par variables d'env.
-- `app/libs/audio_stream.py` : wrapper `pedalboard.io.AudioStream`, chaîne
-  d'effets, mute (`stop`), fermeture (`close`), volume global, enregistrement
-  via une seconde capture dsnoop.
+  entrée et sortie auto sur le device matériel direct, configuration par
+  variables d'env.
+- `app/libs/audio_stream.py` : moteur du looper. Deux streams Pedalboard
+  (capture matérielle seule, lecture matérielle seule), un thread audio qui
+  traite les blocs (`reset=False`), applique le gain/mute, mixe la boucle en
+  cours et écrit la sortie. Chaîne d'effets, `save_effects`/`load_effects`,
+  enregistrement via une file bornée, listeners `(dry, wet)` pour l'analyse.
 - `app/libs/effect_lib.py` : mapping pyo → Pedalboard, `CustomDelay`,
   `EffectSlot`, chemins natifs `pedalboard.Classe`.
 - `app/libs/music_analysis.py` : analyse temps réel numpy (RMS, pitch,
-  spectre), alimentée par une **capture dsnoop dédiée** ; remplace
-  l'analyseur pyo.
+  spectre), alimentée par le **listener du moteur** (file bornée + thread
+  d'analyse) ; remplace l'analyseur pyo.
 - `app/main.py` : point d'entrée, threads API/MCP, arrêt propre SIGINT/SIGTERM.
 - `app/detect-sc.py` : liste les devices et teste le stream (muet par défaut).
 - Tests : `tests/test_audio_devices.py`, `test_effects.py`,
@@ -169,32 +183,46 @@ Les outils d'analyse de `main` sont portés sur Pedalboard, sans pyo :
 
 ### Signal dry et signal wet
 
-Pedalboard ne permet pas de capter la sortie du callback C++. Deux signaux
-sont donc disponibles :
+Le moteur appelle ses listeners à chaque bloc avec deux signaux :
 
-- **dry** (`wet=false`, défaut) : l'entrée brute, captée par une dsnoop
-  dédiée — c'est ce qu'enregistre `start_input_recording` ;
-- **wet** (`wet=true`) : la même entrée **rejouée dans une copie de la chaîne
-  d'effets** (`WetPath`, mêmes plugins/paramètres/gain de sortie). Les blocs
-  sont traités avec `reset=False` et découpés à `buffer_size` (128 frames) :
-  indispensable, car `Pedalboard()` réinitialise l'état des filtres à chaque
-  appel (un clic tous les 128 échantillons sinon). Sur une prise de 40 s, le
-  signal wet est **bit-à-bit identique** au traitement du fichier entier
-  (corrélation 1.0, écart max 0.0, centroïde 189 Hz dans les deux cas).
+- **dry** (`wet=false`, défaut) : l'entrée brute du bloc, telle que captée —
+  c'est ce qu'enregistre `start_input_recording` ;
+- **wet** (`wet=true`) : la **sortie réelle post-effets** du même bloc (avant
+  mix de la boucle), donc exactement ce qui part vers la carte.
 
-C'est donc la sortie au sens « ce qui part vers la carte », calculée une
-seconde fois côté Python. Coût : la chaîne est traitée deux fois quand le wet
-est activé (activation à la demande, désactivable en redémarrant le process).
+Le listener ne fait qu'un `put_nowait` dans une file bornée ; un thread
+d'analyse consomme la file et alimente les ring buffers de 4 s (dry et wet).
+Si l'analyse prend du retard, les blocs en trop sont ignorés : le thread audio
+n'attend jamais et le jeu live ne gagne aucune latence.
+
+`WetPath` (rejeu de la chaîne sur le dry) reste utilisé en mode hors-ligne
+(tests, ou moteur sans `add_listener`) ; il n'est plus sollicité en live.
 
 `index` désigne le **canal d'entrée** (0 = gauche, 1 = droite). Pedalboard
 n'expose pas de gain par canal : `set_output_volume` applique le gain au
 stream stéréo, l'index est conservé pour compatibilité.
 
-L'analyseur ouvre une **capture dsnoop dédiée** (stream principal +
-enregistrement + analyse) et alimente un ring buffer de 4 s (dry et wet). Le
-seuil de signal est −60 dBFS (bruit de fond de l'AudioBox ignoré). Pitch :
-50–2000 Hz. Validé live : les 3 captures coexistent, enregistrement de
-24 576 frames pendant l'analyse.
+Seuil de signal : −60 dBFS (bruit de fond de l'AudioBox ignoré). Pitch :
+50–2000 Hz. Validé live : analyse et enregistrement simultanés, sans capture
+supplémentaire.
+
+## Looper intégré
+
+Le moteur peut relire un WAV de `records/` en boucle, mixé avec le live
+(`play_recording`, `stop_playback`, `playback_status`). Le buffer est chargé en
+mémoire (limite `MAX_LOOP_SECONDS`, 600 s), avec un fondu de 5 ms aux bords et
+un volume par boucle.
+
+- la boucle est mixée **dans le même bloc** que le live, après la chaîne
+  d'effets (elle n'est pas retraitée) : aucun buffer supplémentaire, **aucune
+  latence ajoutée** ;
+- garde-fou de crête (0,99) qui atténue seulement en cas de saturation ;
+- l'état (fichier, boucle, volume, position) est exposé par
+  `playback_status`.
+
+Testé live : `bass_take3_wet.wav` (30,08 s) bouclé à volume 0,8 pendant ~18 s,
+position 17,7 s (100 % temps réel), arrêt propre, ~99 % d'un cœur (busy-wait
+d'écriture de `AudioStream`, pas le looper), 57 °C.
 
 ## MCP en HTTP streamable (MCP 2.x)
 

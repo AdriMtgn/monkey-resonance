@@ -35,15 +35,15 @@ def test_audiobox_is_detected():
     assert any("AudioBox USB 96" in name for name in names)
 
 
-def test_config_prefers_shared_capture_and_direct_output():
+def test_config_prefers_direct_hardware_for_low_latency():
     if not _has_audiobox():
         pytest.skip("AudioBox USB 96 absente")
     config = load_config()
     assert "AudioBox" in config.input_device
     assert "AudioBox" in config.output_device
-    # Entrée partageable (dsnoop) pour pouvoir enregistrer en parallèle.
-    assert "Direct sample snooping device" in config.input_device
-    # Sortie matérielle directe, sans couche PipeWire/Pulse.
+    # Entrée et sortie sur le chemin matériel direct, sans couche
+    # PipeWire/Pulse ni période dsnoop (1024 frames).
+    assert "Direct hardware device" in config.input_device
     assert "Direct hardware device" in config.output_device
     assert config.record_device == config.input_device
     assert config.buffer_latency_ms > 0
@@ -79,8 +79,8 @@ def test_live_stream_opens_muted():
     os.environ.get("RUN_AUDIO_TESTS") != "1",
     reason="RUN_AUDIO_TESTS=1 requis (ouvre réellement l'AudioBox)",
 )
-def test_live_recording_uses_shared_capture(monkeypatch, tmp_path):
-    """L'enregistrement ouvre une 2e capture dsnoop sans couper la sortie."""
+def test_live_recording_is_tapped_from_engine(monkeypatch, tmp_path):
+    """L'enregistrement est alimenté par le moteur, sans capture secondaire."""
     config = load_config()
     monkeypatch.setattr(audio_stream_module, "records_folder", str(tmp_path))
     engine = AudioStream(

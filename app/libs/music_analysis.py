@@ -1,16 +1,18 @@
 """Analyse audio temps réel pour le moteur Pedalboard.
 
-Le callback C++ de ``pedalboard.io.AudioStream`` n'expose pas ses échantillons
-à Python. Comme pour l'enregistrement, on ouvre donc une **capture dsnoop
-dédiée** (input-only) qui alimente un ring buffer numpy. Les outils MCP lisent
-ce buffer sans jamais toucher au thread audio.
+La capture principale du moteur est ouverte en exclusif sur le device matériel
+direct : l'analyseur ne peut pas ouvrir sa propre capture. Il s'enregistre donc
+comme **listener** du moteur (``AudioStream.add_listener``) et reçoit chaque
+bloc ``(dry, wet)``. Le callback ne fait qu'un ``put_nowait`` dans une file
+bornée ; un thread dédié consomme la file et alimente les ring buffers numpy.
+Ainsi l'analyse ne bloque jamais le thread audio et n'ajoute aucune latence.
 
 Deux signaux sont disponibles :
 
 - **dry** : l'entrée brute, telle que captée par la carte ;
-- **wet** : la même entrée repassée dans une copie de la chaîne d'effets du
-  moteur (``WetPath``). C'est l'équivalent de la sortie, calculé hors du
-  callback audio : les plugins sont les mêmes, avec les mêmes paramètres.
+- **wet** : la sortie réelle post-effets, calculée par le moteur (avant mix de
+  la boucle). En mode hors-ligne (tests, ou moteur sans listener), le signal
+  wet est recalculé par ``WetPath`` à partir du dry.
 
 L'analyse est purement numpy : RMS, pitch (autocorrélation), spectre FFT,
 profil MIDI. Aucune dépendance à pyo.
@@ -22,6 +24,7 @@ import atexit
 import logging
 import math
 import os
+import queue
 import sys
 import threading
 import time
@@ -44,6 +47,9 @@ records_folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["RECORDS"])
 RING_SECONDS = 4.0
 CAPTURE_BUFFER_SIZE = 2048
 CAPTURE_POLL_S = 0.004
+# Blocs en attente entre le thread audio et l'analyse (~1 s à 128 frames).
+# Au-delà, les blocs sont ignorés : le live n'attend jamais l'analyse.
+ANALYSIS_QUEUE_SIZE = 512
 # Seuil « signal présent » (~-60 dBFS) : sous ce niveau, on considère que
 # c'est le bruit de fond de l'interface, pas un instrument.
 SILENCE_RMS = 1e-3
@@ -193,10 +199,18 @@ class WetPath:
         self._engine = engine
         self._channels = channels
         self._sample_rate = float(sample_rate)
-        # Le moteur traite des buffers de ``buffer_size`` frames ; on reproduit
-        # ce découpage pour que les dynamiques (compresseur, limiteur) se
-        # comportent exactement comme dans le callback audio.
-        self._block_size = max(int(getattr(engine, "buffer_size", 128) or 128), 1)
+        # Le moteur traite des buffers de ``capture_block_size`` frames (128
+        # sur l'AudioBox en direct) ; on reproduit ce découpage pour que les
+        # dynamiques (compresseur, limiteur) se comportent exactement comme
+        # dans le thread audio.
+        self._block_size = max(
+            int(
+                getattr(engine, "capture_block_size", None)
+                or getattr(engine, "buffer_size", 128)
+                or 128
+            ),
+            1,
+        )
         self._ring = _Ring(channels, ring_size)
         self._board = Pedalboard([])
         self._signature: tuple[Any, ...] | None = None
@@ -281,27 +295,51 @@ class WetPath:
                 wet = np.concatenate(
                     [np.asarray(part, dtype=np.float32) for part in parts], axis=1
                 )
-            self._ring.write(wet)
-            if self._writer is not None:
-                try:
-                    self._writer.write(wet)
-                    self._frames_written += wet.shape[1]
-                    elapsed = time.monotonic() - self._write_started
-                    if elapsed > 1.0 and self._frames_written > (
-                        elapsed + GUARD_SECONDS
-                    ) * self._sample_rate:
-                        self._error = (
-                            "Enregistrement wet interrompu : débit anormal "
-                            f"({self._frames_written / self._sample_rate:.1f} s "
-                            f"écrites en {elapsed:.1f} s)"
-                        )
-                        logger.error(self._error)
-                        self._close_writer()
-                except (RuntimeError, ValueError, OSError) as exc:
-                    self._error = f"Écriture de l'enregistrement wet échouée : {exc}"
-                    logger.exception(self._error)
-                    self._close_writer()
+            self._write_output(wet)
         return wet
+
+    def feed_wet(self, samples: np.ndarray) -> np.ndarray:
+        """Écrit le wet fourni par le moteur (déjà passé dans les effets).
+
+        Utilisé quand le moteur expose un listener : le wet est alors la
+        sortie réelle, inutile de rejouer la chaîne.
+        """
+        wet = np.asarray(samples, dtype=np.float32)
+        if wet.ndim == 1:
+            wet = wet[np.newaxis, :]
+        if wet.shape[0] == 1 and self._channels > 1:
+            wet = np.repeat(wet, self._channels, axis=0)
+        elif wet.shape[0] > self._channels:
+            wet = wet[: self._channels]
+        if wet.shape[1] == 0:
+            return wet
+        with self._lock:
+            self._write_output(wet)
+        return wet
+
+    def _write_output(self, wet: np.ndarray) -> None:
+        """Écrit dans le ring (et le WAV wet) — verrou déjà tenu."""
+        self._ring.write(wet)
+        if self._writer is None:
+            return
+        try:
+            self._writer.write(wet)
+            self._frames_written += wet.shape[1]
+            elapsed = time.monotonic() - self._write_started
+            if elapsed > 1.0 and self._frames_written > (
+                elapsed + GUARD_SECONDS
+            ) * self._sample_rate:
+                self._error = (
+                    "Enregistrement wet interrompu : débit anormal "
+                    f"({self._frames_written / self._sample_rate:.1f} s "
+                    f"écrites en {elapsed:.1f} s)"
+                )
+                logger.error(self._error)
+                self._close_writer()
+        except (RuntimeError, ValueError, OSError) as exc:
+            self._error = f"Écriture de l'enregistrement wet échouée : {exc}"
+            logger.exception(self._error)
+            self._close_writer()
 
     # ------------------------------------------------------------------
     # Enregistrement
@@ -372,6 +410,9 @@ class AudioAnalyzer:
         self._capture: PedalboardAudioStream | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        # Mode alimenté par le moteur (listener) : file bornée + thread.
+        self._inbox: queue.Queue[tuple[np.ndarray, np.ndarray]] | None = None
+        self._fed = False
         # Mode hors-ligne (tests) : les échantillons sont fournis via feed().
         self._offline = not open_capture
         self._lifecycle_lock = threading.Lock()
@@ -400,10 +441,36 @@ class AudioAnalyzer:
         return self._channels
 
     def start(self) -> None:
-        """Ouvre la capture d'analyse et démarre le thread de lecture."""
+        """Démarre l'analyse, alimentée par le moteur ou par une capture.
+
+        Si le moteur expose ``add_listener`` (cas normal), aucun périphérique
+        n'est ouvert : le thread audio dépose les blocs dans ``_inbox`` et un
+        thread d'analyse les consomme. Sinon (ancien moteur), on retombe sur
+        une capture ``dsnoop`` dédiée.
+        """
         with self._lifecycle_lock:
             if self._running:
                 return
+            if hasattr(self._stream, "add_listener"):
+                self._inbox = queue.Queue(maxsize=ANALYSIS_QUEUE_SIZE)
+                self._stream.add_listener(self._on_audio)
+                self._fed = True
+                self._error = None
+                self._running = True
+                self._thread = threading.Thread(
+                    target=self._analysis_loop,
+                    name="pedalboard-analysis",
+                    daemon=True,
+                )
+                self._thread.start()
+                atexit.register(self.close)
+                logger.info(
+                    "Analyse audio démarrée (alimentée par le moteur) sr=%g canaux=%s",
+                    self._sample_rate,
+                    self._channels,
+                )
+                return
+
             record_device = getattr(self._stream, "record_device", None)
             try:
                 capture = PedalboardAudioStream(
@@ -443,6 +510,32 @@ class AudioAnalyzer:
                 self._channels,
             )
 
+    def _on_audio(self, dry: np.ndarray, wet: np.ndarray) -> None:
+        """Listener appelé depuis le thread audio : ne doit jamais bloquer."""
+        inbox = self._inbox
+        if inbox is None:
+            return
+        try:
+            inbox.put_nowait((dry, wet))
+        except queue.Full:
+            # L'analyse a pris du retard : on ignore le bloc. Le live continue.
+            pass
+
+    def _analysis_loop(self) -> None:
+        while self._running:
+            inbox = self._inbox
+            if inbox is None:
+                break
+            try:
+                dry, wet = inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.feed(dry, wet=wet)
+            except Exception as exc:  # ne jamais tuer le thread d'analyse
+                self._error = f"Analyse audio échouée : {exc}"
+                logger.exception(self._error)
+
     def _capture_loop(self) -> None:
         while self._running:
             capture = self._capture
@@ -473,8 +566,16 @@ class AudioAnalyzer:
             self._thread = None
             capture = self._capture
             self._capture = None
+            stream = self._stream if self._fed else None
+            self._fed = False
+            self._inbox = None
             self._offline = False
 
+        if stream is not None and hasattr(stream, "remove_listener"):
+            try:
+                stream.remove_listener(self._on_audio)
+            except Exception:
+                logger.debug("Retrait du listener d'analyse échoué", exc_info=True)
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
         if capture is not None and capture.running:
@@ -486,8 +587,18 @@ class AudioAnalyzer:
     # ------------------------------------------------------------------
     # Ring buffer
     # ------------------------------------------------------------------
-    def feed(self, samples: np.ndarray) -> None:
-        """Ajoute des échantillons au ring buffer (thread capture ou tests)."""
+    def feed(
+        self,
+        samples: np.ndarray,
+        *,
+        wet: np.ndarray | None = None,
+    ) -> None:
+        """Ajoute des échantillons au ring buffer (moteur, capture ou tests).
+
+        ``wet`` (optionnel) est la sortie post-effets déjà calculée par le
+        moteur : elle est écrite telle quelle. Sans ``wet``, le signal est
+        recalculé par ``WetPath`` (mode hors-ligne).
+        """
         chunk = np.asarray(samples, dtype=np.float32)
         if chunk.ndim == 1:
             chunk = chunk[np.newaxis, :]
@@ -503,10 +614,13 @@ class AudioAnalyzer:
 
         self._dry.write(chunk)
 
-        wet = self._wet
-        if wet is not None:
+        path = self._wet
+        if path is not None:
             try:
-                wet.process(chunk)
+                if wet is not None:
+                    path.feed_wet(wet)
+                else:
+                    path.process(chunk)
             except Exception as exc:  # ne jamais tuer la capture
                 self._error = f"Traitement wet échoué : {exc}"
                 logger.exception(self._error)

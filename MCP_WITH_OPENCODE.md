@@ -23,6 +23,10 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `load_input_effects(index, name)` | Recharge une chaîne sauvegardée |
 | `start_input_recording(index, filename, wet)` | Enregistre l'entrée brute (défaut) ou la sortie effet (`wet=true`) |
 | `stop_input_recording(index, wet)` | Arrête l'enregistrement correspondant |
+| `list_recordings()` | Liste les WAV de `records/` (nom, durée, taille) |
+| `play_recording(index, filename, loop, volume)` | Relit un WAV dans le moteur, mixé avec le live |
+| `stop_playback(index)` | Arrête la lecture en cours |
+| `playback_status(index)` | État de la boucle (fichier, position, volume) |
 | `list_inputs_outputs()` | Liste des devices audio d'entrée/sortie |
 | `set_output_volume(index, volume)` | Volume de sortie (gain stéréo) |
 | `get_rms_level(index, window_size, wet)` | Niveau RMS / peak / dBFS |
@@ -30,6 +34,11 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `get_frequency_analysis(index, fft_size, wet)` | Spectre FFT, dominante, bandes |
 | `get_audio_profile(index)` | Profil complet RMS + pitch + spectre |
 | `global_status()` | Vérifie si le système audio fonctionne |
+
+L'enregistrement et l'analyse sont **alimentés par le moteur** (listener +
+file bornée) : ils n'ouvrent pas de capture secondaire et n'ajoutent aucune
+latence au jeu live. Une boucle est mixée dans le bloc de sortie courant, donc
+elle non plus ne retarde pas le live.
 
 ## Utilisation
 

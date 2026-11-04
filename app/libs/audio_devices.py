@@ -1,12 +1,15 @@
 """Découverte et résolution des périphériques audio via Pedalboard/JUCE.
 
 Pedalboard expose les noms de devices ALSA/JUCE, y compris dans le container
-(contrairement à PortAudio qui ne voit aucun device ici). En entrée, on
-préfère le device partageable ``dsnoop`` (« Direct sample snooping device »)
-afin que l'enregistrement puisse ouvrir une seconde capture. En sortie, on
-préfère le chemin matériel direct (« Direct hardware device without any
-conversions »), qui évite PipeWire/Pulse et donc une couche de latence
-supplémentaire.
+(contrairement à PortAudio qui ne voit aucun device ici). En entrée comme en
+sortie, on préfère le chemin matériel direct (« Direct hardware device without
+any conversions ») : il évite PipeWire/Pulse et la période du ``dsnoop``
+(1024 frames), donc la latence la plus faible.
+
+La carte étant alors ouverte en exclusif, l'enregistrement et l'analyse
+n'ouvrent plus de capture secondaire : ils sont alimentés par le moteur
+(listeners / file bornée). ``prefer_shared_capture`` reste disponible pour les
+configurations qui voudraient explicitement le ``dsnoop``.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ class AudioConfig:
 
     input_device: str
     output_device: str
-    # Device de capture de l'enregistrement (dsnoop). None = même que l'entrée.
+    # Conservé pour compatibilité : l'enregistrement est alimenté par le moteur.
     record_device: str | None = None
     sample_rate: int = 48000
     buffer_size: int = 128
@@ -253,7 +256,7 @@ def load_config() -> AudioConfig:
 
     Variables supportées :
       AUDIO_INPUT_DEVICE / AUDIO_OUTPUT_DEVICE (nom, sous-chaîne ou index)
-      AUDIO_RECORD_DEVICE (capture d'enregistrement ; défaut = entrée)
+      AUDIO_RECORD_DEVICE (conservé ; l'enregistrement est alimenté par le moteur)
       AUDIO_SAMPLE_RATE (défaut 48000)
       AUDIO_BUFFER_SIZE (défaut 128 ; 64 validé sur AudioBox USB 96)
       AUDIO_INPUT_CHANNELS / AUDIO_OUTPUT_CHANNELS (défaut 2)
@@ -267,19 +270,13 @@ def load_config() -> AudioConfig:
         os.environ.get("AUDIO_INPUT_DEVICE"),
         inputs,
         "input",
-        prefer_shared_capture=True,
     )
     output_device = resolve_device_name(
         os.environ.get("AUDIO_OUTPUT_DEVICE"), outputs, "output"
     )
     record_preference = os.environ.get("AUDIO_RECORD_DEVICE")
     record_device = (
-        resolve_device_name(
-            record_preference,
-            inputs,
-            "input",
-            prefer_shared_capture=True,
-        )
+        resolve_device_name(record_preference, inputs, "input")
         if record_preference
         else input_device
     )

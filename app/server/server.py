@@ -14,6 +14,8 @@ try:
 except ImportError:  # pragma: no cover - dépendances optionnelles
     _analyzer_available = False
 
+from libs.utils import APP_BASE_FOLDER, APP_FOLDERS
+
 logger = logging.getLogger(__name__)
 
 # Temps laissé au ring buffer wet pour se remplir avant une lecture/analyse.
@@ -393,6 +395,110 @@ async def stop_input_recording(index: int, wet: bool = False) -> dict:
     try:
         filepath = inp.stop_recording() if hasattr(inp, 'stop_recording') else None
         return {"result": filepath, "source": "dry"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ----------------------------------------------------------------------
+# Looper : lecture des enregistrements dans le moteur
+# ----------------------------------------------------------------------
+def _input_at(index: int):
+    """Retourne ``(input, error)`` pour l'index demandé."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return None, {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return None, {"error": "inputs not found"}
+    try:
+        return inputs[index], None
+    except Exception:
+        return None, {"error": "invalid index"}
+
+
+@mcp.tool()
+async def list_recordings() -> list[dict]:
+    """Liste les WAV disponibles dans `records/` (nom, durée, taille)."""
+    folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["RECORDS"])
+    result: list[dict] = []
+    if not os.path.isdir(folder):
+        return result
+    for name in sorted(os.listdir(folder)):
+        if not name.lower().endswith(".wav"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            entry = {
+                "filename": name,
+                "size_mb": round(os.path.getsize(path) / (1024 * 1024), 2),
+            }
+            try:
+                import wave
+
+                with wave.open(path, "rb") as wav:
+                    rate = wav.getframerate()
+                    entry["duration_s"] = (
+                        round(wav.getnframes() / rate, 2) if rate else None
+                    )
+                    entry["channels"] = wav.getnchannels()
+            except (wave.Error, OSError, EOFError):
+                entry["duration_s"] = None
+            result.append(entry)
+        except OSError as exc:
+            result.append({"filename": name, "error": str(exc)})
+    return result
+
+
+@mcp.tool()
+async def play_recording(
+    index: int, filename: str, loop: bool = True, volume: float = 1.0
+) -> dict:
+    """Joue un WAV de `records/` dans le moteur, mixé avec le jeu live.
+
+    ``loop=True`` rejoue le fichier en boucle jusqu'à `stop_playback`.
+    ``volume`` est appliqué à la boucle seule (1.0 = niveau du fichier).
+    """
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "play_recording"):
+        return {"error": "playback not supported by this engine"}
+    try:
+        return {"result": "playing", "playback": inp.play_recording(
+            filename, loop=loop, volume=volume
+        )}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def stop_playback(index: int) -> dict:
+    """Arrête la boucle en cours sur l'input `index`."""
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "stop_playback"):
+        return {"error": "playback not supported by this engine"}
+    try:
+        stopped = inp.stop_playback()
+        return {
+            "result": "stopped" if stopped else "no_playback",
+            "playback": stopped,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def playback_status(index: int) -> dict:
+    """État de la lecture en cours (fichier, boucle, position) ou `null`."""
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "playback_status"):
+        return {"playback": None}
+    try:
+        return {"playback": inp.playback_status()}
     except Exception as e:
         return {"error": str(e)}
 

@@ -87,11 +87,14 @@ def _start_engine(config: AudioConfig) -> AudioStream:
         engine.buffer_size,
         len(engine.effects_chain),
     )
-    logger.info("Capture d'enregistrement : %r", config.record_device)
     logger.info(
-        "Latence buffer : %.2f ms/direction, %.2f ms aller-retour théorique",
+        "Enregistrement et analyse alimentés par le moteur (pas de capture secondaire)"
+    )
+    logger.info(
+        "Latence logicielle : %.2f ms (capture %s frames + sortie %s frames)",
         engine.latency_ms,
-        engine.latency_ms * 2.0,
+        engine.capture_block_size,
+        engine.buffer_size,
     )
     if config.start_muted:
         logger.info("Sortie démarrée en mute (AUDIO_START_MUTED=1)")

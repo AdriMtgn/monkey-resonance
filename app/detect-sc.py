@@ -33,7 +33,7 @@ def _print_devices() -> None:
 def _print_config(config: AudioConfig) -> None:
     print(f"Entrée  : {config.input_device}")
     print(f"Sortie  : {config.output_device}")
-    print(f"Enreg.  : {config.record_device}")
+    print("Enreg.  : tap du moteur (dry/wet), pas de capture secondaire")
     print(
         f"Format  : {config.sample_rate} Hz, {config.buffer_size} frames, "
         f"{config.input_channels} in / {config.output_channels} out"
@@ -71,8 +71,8 @@ def _run_test(engine: AudioStream, seconds: float, unmuted: bool) -> None:
     print(f"  Buffer effectif      : {buffer_size} frames")
     print(f"  Sample rate effectif : {sample_rate:g} Hz")
     print(
-        f"  Latence buffer       : {latency_ms:.2f} ms/direction, "
-        f"{latency_ms * 2:.2f} ms aller-retour théorique"
+        f"  Latence logicielle   : {latency_ms:.2f} ms "
+        f"(capture {engine.capture_block_size} + sortie {buffer_size} frames)"
     )
     print(f"  CPU process          : {cpu / wall * 100:.1f} % d'un cœur")
     print(f"  Frames d'entrée perdues : {dropped}")
