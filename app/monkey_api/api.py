@@ -1,4 +1,3 @@
-import importlib
 import logging
 import os
 import sys
@@ -168,21 +167,19 @@ def add_effect_to_input(index: int, params: EffectParams) -> dict:
     try:
         if not isinstance(params.effect_path, str) or '.' not in params.effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = params.effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(params.position, effect_cls, **params.params)
+        # Le moteur Pedalboard résout lui-même les chemins pyo/pedalboard.
+        inp.add_effect(params.position, params.effect_path, **(params.params or {}))
         return {"result": "effect_added"}
     except Exception as e:
         return {"error": str(e)}
 
 @app.post("/update_effect/{index}")
 def update_effect(index: int, params: UpdateEffectParams) -> dict:
-    """Add an effect to input at index.
-    effect_path: module.Class string, e.g. 'pyo.Delay'
+    """Update the parameters of an effect at `position` in input `index`.
+
+    effect_path: module.Class string, kept for API compatibility
     params: dict of kwargs for the effect class
-    position: position in chain (None for append)
+    position: index of the effect in the chain (required)
     """
     main = sys.modules.get("__main__")
     if main is None:
@@ -197,12 +194,10 @@ def update_effect(index: int, params: UpdateEffectParams) -> dict:
     try:
         if not isinstance(params.effect_path, str) or '.' not in params.effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = params.effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(params.position, effect_cls, **params.params)
-        return {"result": "effect_added"}
+        if params.position is None:
+            return {"error": "position is required to update an effect"}
+        inp.update_effect(params.position, **(params.params or {}))
+        return {"result": "effect_updated"}
     except Exception as e:
         return {"error": str(e)}
 

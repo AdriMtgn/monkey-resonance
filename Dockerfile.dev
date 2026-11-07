@@ -1,8 +1,9 @@
 # Dev image: main image + dev dependencies (pytest, ruff) + agent OpenCode.
-# Build the main image first: docker build -t monkey-resonance .  (make build)
-FROM monkey-resonance:latest
+# Build the main image first: docker build -t monkey-resonance-pedalboard .  (make build)
+FROM monkey-resonance-pedalboard:latest
 
 # Install dev dependencies into the existing venv
+# (requirements-dev.txt already pins MCP 2.x, the streamable-http capable one)
 COPY requirements-dev.txt /base_app/requirements-dev.txt
 RUN uv pip install -r /base_app/requirements-dev.txt
 

@@ -16,9 +16,10 @@ def test_import_utils():
 def test_import_audio_stream():
     from libs.audio_stream import AudioStream
 
-    for method in ("add_effect", "remove_effect", "start", "stop",
-                   "start_recording", "stop_recording", "save_effects",
-                   "load_effects"):
+    for method in ("add_effect", "remove_effect", "update_effect", "start", "stop",
+                   "close", "start_recording", "stop_recording", "save_effects",
+                   "load_effects", "play_recording", "stop_playback",
+                   "playback_status", "add_listener", "remove_listener"):
         assert hasattr(AudioStream, method), f"AudioStream.{method} manquant"
 
 
@@ -40,9 +41,24 @@ def test_api_module_defines_fastapi_app():
 
 
 def test_mcp_module_defines_server():
-    import monkey_mcp.mcp as mcp_mod
+    from server import server as mcp_mod
 
     assert mcp_mod.mcp.name == "Monkey Resonance MCP"
     # les tools historiques doivent survivre à un refactor
     tools = {tool.name for tool in mcp_mod.mcp._tool_manager.list_tools()}
-    assert {"list_inputs", "mute_input", "add_effect_to_input"} <= tools
+    assert {
+        "list_inputs",
+        "mute_input",
+        "add_effect_to_input",
+        "save_input_effects",
+        "load_input_effects",
+        "set_output_volume",
+        "get_rms_level",
+        "get_pitch_info",
+        "get_frequency_analysis",
+        "get_audio_profile",
+        "list_recordings",
+        "play_recording",
+        "stop_playback",
+        "playback_status",
+    } <= tools

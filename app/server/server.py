@@ -1,4 +1,4 @@
-import importlib
+import asyncio
 import logging
 import os
 import sys
@@ -8,7 +8,18 @@ sys.path.insert(0, '/opt/venv/lib/python3.12/site-packages')
 
 from mcp.server import MCPServer
 
+try:
+    from libs.music_analysis import get_analyzer
+    _analyzer_available = True
+except ImportError:  # pragma: no cover - dépendances optionnelles
+    _analyzer_available = False
+
+from libs.utils import APP_BASE_FOLDER, APP_FOLDERS
+
 logger = logging.getLogger(__name__)
+
+# Temps laissé au ring buffer wet pour se remplir avant une lecture/analyse.
+WET_WARMUP_S = 0.4
 
 # Allow host/port configuration via environment variables so the
 # MCP's HTTP transport can be exposed (for testing tools/clients).
@@ -16,11 +27,18 @@ logger = logging.getLogger(__name__)
 # from the host when the container publishes the port.
 host = os.environ.get("MCP_HOST", "0.0.0.0")
 port = int(os.environ.get("MCP_PORT", "8005"))
+# Transport par défaut : HTTP streamable (MCP 2.x). "stdio" reste possible
+# pour les clients qui lancent le process eux-mêmes (ex : mcp-stdio.sh).
+transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
 
-logger.info(f"MCP server will run on {host}:{port}")
-# Create the MCP server instance
-# Transport configuration (host/port) goes to run(), not the constructor
+if transport == "stdio":
+    logger.info("MCP server will run over stdio")
+else:
+    logger.info("MCP server will run on http://%s:%s/mcp", host, port)
+# Create the MCP server instance. Host/port are passed to run() with the
+# streamable-http transport (MCP 2.x moved them out of the constructor).
 mcp = MCPServer("Monkey Resonance MCP")
+
 
 @mcp.tool()
 async def global_status() -> bool:
@@ -209,11 +227,8 @@ async def add_effect_to_input(index: int, effect_path: str, params: dict | None 
     try:
         if not isinstance(effect_path, str) or '.' not in effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(position, effect_cls, **params)
+        # Le moteur Pedalboard résout lui-même les chemins pyo/pedalboard.
+        inp.add_effect(position, effect_path, **params)
         return {"result": "effect_added"}
     except Exception as e:
         return {"error": str(e)}
@@ -221,10 +236,11 @@ async def add_effect_to_input(index: int, effect_path: str, params: dict | None 
 
 @mcp.tool()
 async def update_effect(index: int, effect_path: str, params: dict | None = None, position: int | None = None) -> dict:
-    """Add an effect to input at index.
-    effect_path: module.Class string, e.g. 'pyo.Delay'
+    """Update the parameters of an effect at `position` in input `index`.
+
+    effect_path: module.Class string, kept for API compatibility
     params: dict of kwargs for the effect class
-    position: position in chain (None for append)
+    position: index of the effect in the chain (required)
     """
     params = params or {}
     main = sys.modules.get("__main__")
@@ -240,12 +256,10 @@ async def update_effect(index: int, effect_path: str, params: dict | None = None
     try:
         if not isinstance(effect_path, str) or '.' not in effect_path:
             return {"error": "effect_path must be 'module.Class' string"}
-        module_name, class_name = effect_path.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        effect_cls = getattr(module, class_name)
-        # call add_effect(position, effect_cls, **params)
-        inp.add_effect(position, effect_cls, **params)
-        return {"result": "effect_added"}
+        if position is None:
+            return {"error": "position is required to update an effect"}
+        inp.update_effect(position, **params)
+        return {"result": "effect_updated"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -270,8 +284,55 @@ async def remove_effect_from_input(index: int, effect_index: int) -> dict:
 
 
 @mcp.tool()
-async def start_input_recording(index: int, filename: str | None = None) -> dict:
-    """Start recording on the input at `index`. Returns filepath or error."""
+async def save_input_effects(index: int, name: str) -> dict:
+    """Save the effect chain of the input at `index` as `saved_effects/<name>.json`."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[index]
+    except Exception:
+        return {"error": "invalid index"}
+    try:
+        filepath = inp.save_effects(name)
+        return {"result": filepath}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def load_input_effects(index: int, name: str) -> dict:
+    """Load `saved_effects/<name>.json` into the effect chain of the input at `index`."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[index]
+    except Exception:
+        return {"error": "invalid index"}
+    try:
+        inp.load_effects(name)
+        return {"result": "effects_loaded", "effects": inp.effects_chain}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def start_input_recording(
+    index: int, filename: str | None = None, wet: bool = False
+) -> dict:
+    """Start recording on the input at `index`. Returns filepath or error.
+
+    ``wet=True`` enregistre le signal **après les effets** (sortie simulée) :
+    la chaîne courante est rejouée sur l'entrée captée par l'analyseur, puis
+    écrite dans le WAV. ``wet=False`` (défaut) enregistre l'entrée brute.
+    """
     main = sys.modules.get("__main__")
     if main is None:
         return {"error": "__main__ not available"}
@@ -282,15 +343,31 @@ async def start_input_recording(index: int, filename: str | None = None) -> dict
         inp = inputs[index]
     except Exception:
         return {"error": "invalid index"}
+
+    if wet:
+        if not _analyzer_available:
+            return {"error": "Audio analyzer not available"}
+        analyzer = get_analyzer()
+        if analyzer is None:
+            return {"error": "Analyzer not initialized (no audio input)"}
+        try:
+            analyzer.enable_wet()
+            # Laisse le ring buffer wet se remplir avant d'ouvrir le fichier.
+            await asyncio.sleep(WET_WARMUP_S)
+            filepath = analyzer.start_wet_recording(filename)
+            return {"result": filepath, "source": "wet"}
+        except Exception as e:
+            return {"error": str(e)}
+
     try:
         filepath = inp.start_recording(filename) if hasattr(inp, 'start_recording') else None
-        return {"result": filepath}
+        return {"result": filepath, "source": "dry"}
     except Exception as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
-async def stop_input_recording(index: int) -> dict:
+async def stop_input_recording(index: int, wet: bool = False) -> dict:
     """Stop recording on the input at `index`. Returns filepath or error."""
     main = sys.modules.get("__main__")
     if main is None:
@@ -302,18 +379,248 @@ async def stop_input_recording(index: int) -> dict:
         inp = inputs[index]
     except Exception:
         return {"error": "invalid index"}
+
+    if wet:
+        if not _analyzer_available:
+            return {"error": "Audio analyzer not available"}
+        analyzer = get_analyzer()
+        if analyzer is None:
+            return {"error": "Analyzer not initialized (no audio input)"}
+        try:
+            filepath = analyzer.stop_wet_recording()
+            return {"result": filepath, "source": "wet"}
+        except Exception as e:
+            return {"error": str(e)}
+
     try:
         filepath = inp.stop_recording() if hasattr(inp, 'stop_recording') else None
-        return {"result": filepath}
+        return {"result": filepath, "source": "dry"}
     except Exception as e:
         return {"error": str(e)}
 
+
+# ----------------------------------------------------------------------
+# Looper : lecture des enregistrements dans le moteur
+# ----------------------------------------------------------------------
+def _input_at(index: int):
+    """Retourne ``(input, error)`` pour l'index demandé."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return None, {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return None, {"error": "inputs not found"}
+    try:
+        return inputs[index], None
+    except Exception:
+        return None, {"error": "invalid index"}
+
+
+@mcp.tool()
+async def list_recordings() -> list[dict]:
+    """Liste les WAV disponibles dans `records/` (nom, durée, taille)."""
+    folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["RECORDS"])
+    result: list[dict] = []
+    if not os.path.isdir(folder):
+        return result
+    for name in sorted(os.listdir(folder)):
+        if not name.lower().endswith(".wav"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            entry = {
+                "filename": name,
+                "size_mb": round(os.path.getsize(path) / (1024 * 1024), 2),
+            }
+            try:
+                import wave
+
+                with wave.open(path, "rb") as wav:
+                    rate = wav.getframerate()
+                    entry["duration_s"] = (
+                        round(wav.getnframes() / rate, 2) if rate else None
+                    )
+                    entry["channels"] = wav.getnchannels()
+            except (wave.Error, OSError, EOFError):
+                entry["duration_s"] = None
+            result.append(entry)
+        except OSError as exc:
+            result.append({"filename": name, "error": str(exc)})
+    return result
+
+
+@mcp.tool()
+async def play_recording(
+    index: int, filename: str, loop: bool = True, volume: float = 1.0
+) -> dict:
+    """Joue un WAV de `records/` dans le moteur, mixé avec le jeu live.
+
+    ``loop=True`` rejoue le fichier en boucle jusqu'à `stop_playback`.
+    ``volume`` est appliqué à la boucle seule (1.0 = niveau du fichier).
+    """
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "play_recording"):
+        return {"error": "playback not supported by this engine"}
+    try:
+        return {"result": "playing", "playback": inp.play_recording(
+            filename, loop=loop, volume=volume
+        )}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def stop_playback(index: int) -> dict:
+    """Arrête la boucle en cours sur l'input `index`."""
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "stop_playback"):
+        return {"error": "playback not supported by this engine"}
+    try:
+        stopped = inp.stop_playback()
+        return {
+            "result": "stopped" if stopped else "no_playback",
+            "playback": stopped,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def playback_status(index: int) -> dict:
+    """État de la lecture en cours (fichier, boucle, position) ou `null`."""
+    inp, error = _input_at(index)
+    if error is not None:
+        return error
+    if not hasattr(inp, "playback_status"):
+        return {"playback": None}
+    try:
+        return {"playback": inp.playback_status()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ----------------------------------------------------------------------
+# Volume / analyse musicale
+# ----------------------------------------------------------------------
+@mcp.tool()
+async def set_output_volume(index: int, volume: float) -> dict:
+    """Set the output volume (0.0 = mute, 1.0 = normal).
+
+    ``index`` is kept for API compatibility (0 = left, 1 = right). Pedalboard
+    applies a single gain to the stereo stream, so both channels are affected.
+    """
+    main = sys.modules.get("__main__")
+    if main is None:
+        return {"error": "__main__ not available"}
+    inputs = main.__dict__.get("inputs", None)
+    if not inputs:
+        return {"error": "inputs not found"}
+    try:
+        inp = inputs[0]
+        channels = int(getattr(inp, "num_output_channels", 2))
+        if index < 0 or index >= channels:
+            return {"error": f"Output index {index} out of range (0..{channels - 1})"}
+        inp.global_volume = max(float(volume), 0.0)
+        return {
+            "result": f"Volume set to {inp.global_volume} for output {index} (stereo)"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _analyzer_reply(kind: str, index: int, *, wet: bool = False, **kwargs: object) -> dict:
+    """Appelle l'analyseur global et emballe le résultat comme l'ancien MCP."""
+    if not _analyzer_available:
+        return {"error": "Audio analyzer not available"}
+    analyzer = get_analyzer()
+    if analyzer is None:
+        return {"error": "Analyzer not initialized (no audio input)"}
+    try:
+        if kind == "profile":
+            return {"profile": analyzer.analyze_audio_profile(index, wet=wet)}
+        if kind == "rms":
+            return {"rms": analyzer.analyze_rms(index, wet=wet, **kwargs)}
+        if kind == "pitch":
+            return {"pitch": analyzer.analyze_pitch(index, wet=wet)}
+        if kind == "frequency":
+            return {"frequency": analyzer.analyze_frequency(index, wet=wet, **kwargs)}
+        return {"error": f"unknown analysis: {kind}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def _prepare_wet() -> dict | None:
+    """Active le signal wet et laisse le ring buffer se remplir."""
+    if not _analyzer_available:
+        return {"error": "Audio analyzer not available"}
+    analyzer = get_analyzer()
+    if analyzer is None:
+        return {"error": "Analyzer not initialized (no audio input)"}
+    analyzer.enable_wet()
+    await asyncio.sleep(WET_WARMUP_S)
+    return None
+
+
+@mcp.tool()
+async def get_audio_profile(index: int, wet: bool = False) -> dict:
+    """Get a comprehensive audio profile (RMS, pitch, MIDI note, spectrum).
+
+    ``wet=True`` analyse le signal **après les effets** (sortie simulée),
+    ``wet=False`` l'entrée brute.
+    """
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("profile", index, wet=wet)
+
+
+@mcp.tool()
+async def get_rms_level(index: int, window_size: int = 2048, wet: bool = False) -> dict:
+    """Get the RMS / peak level for an input channel (``wet=True``: post-effets)."""
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("rms", index, wet=wet, window_size=window_size)
+
+
+@mcp.tool()
+async def get_pitch_info(index: int, wet: bool = False) -> dict:
+    """Get the detected pitch, MIDI note and confidence (``wet=True``: post-effets)."""
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("pitch", index, wet=wet)
+
+
+@mcp.tool()
+async def get_frequency_analysis(index: int, fft_size: int = 2048, wet: bool = False) -> dict:
+    """Get FFT analysis (dominant frequency, centroid, bands, peaks).
+
+    ``wet=True`` analyse le signal après les effets.
+    """
+    if wet:
+        error = await _prepare_wet()
+        if error is not None:
+            return error
+    return _analyzer_reply("frequency", index, wet=wet, fft_size=fft_size)
+
+
 def start_mcp():
-    # Run the MCP server using HTTP transport (streamable-http)
-    # In MCP 2.x, run() accepts transport and host/port parameters
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=port
-    )
+    """Démarre le serveur MCP.
+
+    Transport par défaut : HTTP streamable, endpoint ``/mcp``
+    (``http://<host>:<port>/mcp``). ``MCP_TRANSPORT=stdio`` force le stdio
+    pour un client qui lance lui-même le process.
+    """
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+    mcp.run(transport="streamable-http", host=host, port=port)
 

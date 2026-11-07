@@ -1,275 +1,870 @@
-import importlib
+"""Chaîne audio temps réel basée sur Pedalboard.
+
+Ce module remplace l'implémentation pyo. Il garde la même API publique
+(``add_effect``, ``remove_effect``, ``start``, ``stop``, ``save_effects``,
+``load_effects``, ``start_recording``, ``stop_recording``) pour que l'API REST
+et le serveur MCP continuent de fonctionner via ``sys.modules["__main__"]``.
+
+Le traitement des effets et le mixage des boucles sont faits dans un thread
+Python dédié (``_audio_loop``), à partir de deux streams Pedalboard :
+
+- une **capture** seule, sur le device matériel direct ;
+- une **lecture** seule, sur le même device matériel direct.
+
+Pedalboard ne permet pas d'écrire dans le callback d'un stream duplex (le
+``playBuffer`` est ignoré quand l'entrée et la sortie sont ouvertes ensemble),
+d'où cette séparation. Les blocs sont traités avec ``reset=False`` : l'état des
+filtres est conservé d'un bloc à l'autre (sinon un clic tous les ``buffer_size``
+échantillons).
+
+La capture est ouverte sur le device matériel direct (et non ``dsnoop``) : à
+128 frames, elle délivre le débit réel (48 000 frames/s) avec une latence
+minimale, alors que le dsnoop est calé sur la période du slave (1024 frames) et
+ne remonte qu'une fraction du signal en dessous.
+
+Comme la carte est alors ouverte en exclusif, l'enregistrement et l'analyse ne
+peuvent pas ouvrir leur propre capture : ils sont **alimentés par le moteur**,
+via les listeners (``add_listener``) et/ou une file bornée. Le thread audio ne
+fait ainsi qu'un ``put_nowait`` (oublie le bloc si la file est pleine) : la
+boucle et l'analyse n'ajoutent aucune latence au jeu live.
+"""
+
+from __future__ import annotations
+
 import json
+import logging
+import math
 import os
+import queue
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
-import pyo
+import numpy as np
+from pedalboard import Gain, Pedalboard
+from pedalboard.io import AudioFile
+from pedalboard.io import AudioStream as PedalboardAudioStream
 
+from .effect_lib import EffectSlot
 from .utils import APP_BASE_FOLDER, APP_FOLDERS
 
-records_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["RECORDS"])
-effects_folder = os.path.join(APP_BASE_FOLDER,APP_FOLDERS["SAVED_EFFECTS"])
+logger = logging.getLogger(__name__)
 
-class AudioStream(pyo.PyoObject):
-    def __init__(self, input_channel):
-        """
-        Initialize the PyoStream object with a pyo.Input object and an empty effects chain.
-        """
+records_folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["RECORDS"])
+effects_folder = os.path.join(APP_BASE_FOLDER, APP_FOLDERS["SAVED_EFFECTS"])
+
+MAX_OPEN_ATTEMPTS = 3
+OPEN_RETRY_DELAY_S = 0.4
+# Nombre minimal de frames par bloc de capture. La capture se fait sur le
+# device matériel direct (et non dsnoop) : à 128 frames, il délivre bien
+# 48 000 frames/s. Avec le dsnoop, la période du slave est de 1024 frames et
+# Pedalboard ne remonte qu'une fraction du signal en dessous (17 % à 128).
+CAPTURE_BLOCK_MIN = 64
+# Attente entre deux lectures non bloquantes de la capture.
+CAPTURE_POLL_S = 0.0005
+# Fondu appliqué en début et fin de boucle (évite le clic au raccord).
+LOOP_FADE_S = 0.005
+# Durée maximale d'une boucle chargée en mémoire (garde-fou disque/RAM).
+MAX_LOOP_SECONDS = 600.0
+# Marge de sécurité avant saturation lors du mix live + boucle.
+MIX_CEILING = 0.99
+# Profondeur de la file entre le thread audio et l'écriture WAV.
+RECORD_QUEUE_SIZE = 256
+
+
+class AudioDeviceError(RuntimeError):
+    """Erreur d'ouverture ou d'accès au périphérique audio."""
+
+
+class LoopPlayback:
+    """Lecture d'un WAV (éventuellement bouclé) mixé avec le signal live.
+
+    Seul le thread audio fait avancer ``position``. Les autres champs sont
+    figés à la création : le buffer est immuable, donc pas de verrou.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        data: np.ndarray,
+        *,
+        loop: bool = True,
+        volume: float = 1.0,
+        sample_rate: float = 48000.0,
+    ) -> None:
+        self.path = path
+        self.loop = bool(loop)
+        self.volume = max(float(volume), 0.0)
+        self.sample_rate = float(sample_rate)
+        self.frames = int(data.shape[1])
+        self.position = 0
+        self.finished = False
+
+        buffer = np.array(data, dtype=np.float32, copy=True)
+        fade = int(LOOP_FADE_S * sample_rate)
+        fade = max(0, min(fade, self.frames // 4))
+        if fade:
+            ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            buffer[:, :fade] *= ramp
+            buffer[:, -fade:] *= ramp[::-1]
+        self._data = buffer * self.volume
+
+    @property
+    def duration_s(self) -> float:
+        return self.frames / self.sample_rate if self.sample_rate else 0.0
+
+    @property
+    def position_s(self) -> float:
+        return self.position / self.sample_rate if self.sample_rate else 0.0
+
+    def next_block(self, num_frames: int) -> np.ndarray | None:
+        """Retourne ``num_frames`` frames du buffer, ou ``None`` si terminé."""
+        if self.finished or self.frames == 0:
+            return None
+
+        out = np.zeros((self._data.shape[0], num_frames), dtype=np.float32)
+        filled = 0
+        while filled < num_frames:
+            remaining = self.frames - self.position
+            take = min(remaining, num_frames - filled)
+            out[:, filled : filled + take] = self._data[
+                :, self.position : self.position + take
+            ]
+            self.position += take
+            filled += take
+            if self.position >= self.frames:
+                if self.loop:
+                    self.position = 0
+                else:
+                    self.finished = True
+                    break
+        return out
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "file": self.path,
+            "loop": self.loop,
+            "volume": round(self.volume, 3),
+            "duration_s": round(self.duration_s, 3),
+            "position_s": round(self.position_s, 3),
+            "finished": self.finished,
+        }
+
+
+class AudioStream:
+    """Piste audio Pedalboard avec chaîne d'effets, mute et enregistrement."""
+
+    def __init__(
+        self,
+        input_channel: int = 0,
+        input_device: str | int | None = None,
+        output_device: str | int | None = None,
+        sample_rate: int = 48000,
+        buffer_size: int = 128,
+        num_input_channels: int = 2,
+        num_output_channels: int = 2,
+        *,
+        record_device: str | int | None = None,
+        global_volume: float = 1.0,
+        allow_feedback: bool = False,
+        start_muted: bool = False,
+        open_device: bool = True,
+    ) -> None:
         self.input_channel = input_channel
-        self.input_stream = pyo.Input(input_channel)
-        self.effects_chain = []
-        self.pyo_effects_chain = []
-        self.global_volume = 1.0
-        self.output = self.input_stream * self.global_volume
-        # Recording state
+        self.input_device = input_device
+        self.output_device = output_device
+        # Conservé pour compatibilité : l'enregistrement est désormais alimenté
+        # par le moteur, plus par une capture secondaire.
+        self.record_device = record_device if record_device is not None else input_device
+        self._sample_rate = sample_rate
+        self._buffer_size = buffer_size
+        # Même taille que le buffer de sortie : la latence ajoutée par le
+        # traitement est d'un bloc de capture + un bloc de lecture.
+        self._capture_block = max(int(buffer_size), CAPTURE_BLOCK_MIN)
+        self.num_input_channels = num_input_channels
+        self.num_output_channels = num_output_channels
+        self.allow_feedback = allow_feedback
+
+        self._lock = threading.RLock()
+        # Verrou dédié à l'enregistrement : ouvrir/fermer une capture prend
+        # plusieurs dizaines de ms et ne doit pas bloquer le thread audio.
+        self._record_lock = threading.Lock()
+        self._slots: list[EffectSlot] = []
+        self._volume = max(float(global_volume), 0.0)
+        self._muted = bool(start_muted) or self._volume <= 0.0
+        self._output_gain = Gain(gain_db=self._gain_db())
+        self._board = Pedalboard([self._output_gain])
+
+        self._capture: PedalboardAudioStream | None = None
+        self._playback: PedalboardAudioStream | None = None
+        self._audio_thread: threading.Thread | None = None
+        self._running = False
+        self._last_input = np.empty((num_input_channels, 0), dtype=np.float32)
+        self._frames_read = 0
+        self._clock_start = 0.0
+
+        self._loop: LoopPlayback | None = None
+        self._loop_finished: LoopPlayback | None = None
+
+        # Listeners alimentés depuis le thread audio : ``(dry, wet)``. Le tuple
+        # est remplacé (et non muté) pour que le thread audio puisse l'itérer
+        # sans verrou. Un listener doit être non bloquant (file bornée).
+        self._listeners: tuple[Callable[[np.ndarray, np.ndarray], None], ...] = ()
+
         self.recording = False
-        self.recorder = None
+        self._recording = False
+        self._record_thread: threading.Thread | None = None
+        self._record_writer: AudioFile | None = None
+        # Le thread audio dépose le dry ici ; un thread d'écriture consomme.
+        self._record_queue: queue.Queue[np.ndarray] | None = None
+        self._record_path: str | None = None
 
-    # Private Methods
-    def _get_effect_class_from_name(self, effect_name):
-        module_name, class_name = effect_name.rsplit('.', 1)
-        module = importlib.import_module(module_name)
-        return getattr(module, class_name)
-    
-    def _get_stream_for_position(self, position):
+        if open_device:
+            self._open_device()
+
+    # ------------------------------------------------------------------
+    # Device / stream lifecycle
+    # ------------------------------------------------------------------
+    def _open_capture(self) -> PedalboardAudioStream:
+        return PedalboardAudioStream(
+            input_device_name=self.input_device,
+            output_device_name=None,
+            plugins=None,
+            sample_rate=self._sample_rate,
+            buffer_size=self._capture_block,
+            num_input_channels=self.num_input_channels,
+            num_output_channels=0,
+        )
+
+    def _open_playback(self) -> PedalboardAudioStream:
+        return PedalboardAudioStream(
+            input_device_name=None,
+            output_device_name=self.output_device,
+            plugins=None,
+            sample_rate=self._sample_rate,
+            buffer_size=self._buffer_size,
+            num_input_channels=0,
+            num_output_channels=self.num_output_channels,
+        )
+
+    def _open_device(self) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_OPEN_ATTEMPTS + 1):
+            try:
+                capture = self._open_capture()
+                capture.ignore_dropped_input = True
+                playback = self._open_playback()
+                self._capture = capture
+                self._playback = playback
+                logger.info(
+                    "Périphériques ouverts : in=%r (bloc %s) out=%r (bloc %s) sr=%s",
+                    self.input_device,
+                    self._capture_block,
+                    self.output_device,
+                    self._buffer_size,
+                    self._sample_rate,
+                )
+                return
+            except (RuntimeError, ValueError, OSError) as exc:
+                last_error = exc
+                for stream in (self._capture, self._playback):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (RuntimeError, ValueError, OSError):
+                            logger.debug("Fermeture partielle échouée", exc_info=True)
+                self._capture = None
+                self._playback = None
+                logger.warning(
+                    "Ouverture audio échouée (tentative %s/%s) : %s",
+                    attempt,
+                    MAX_OPEN_ATTEMPTS,
+                    exc,
+                )
+                if attempt < MAX_OPEN_ATTEMPTS:
+                    time.sleep(OPEN_RETRY_DELAY_S)
+
+        available = ", ".join(PedalboardAudioStream.input_device_names)
+        raise AudioDeviceError(
+            "Impossible d'ouvrir le périphérique audio "
+            f"in={self.input_device!r} out={self.output_device!r}. "
+            "Vérifie qu'aucun autre process (ancien container pyo, DAW, "
+            f"PipeWire...) ne tient la carte. Entrées disponibles : {available}"
+        ) from last_error
+
+    def start(self, *, unmute: bool = True) -> None:
+        """Démarre le stream (ou le relance).
+
+        ``unmute=False`` garde la sortie muette dès l'ouverture : évite un
+        court instant de sortie audible (click/larsen) au lancement.
         """
-        Get the stream to connect the new effect to, based on the position.
-        :param position: The position in the chain where the effect will be added.
-        :return: The stream to connect the new effect to.
+        with self._lock:
+            if self._capture is None or self._playback is None:
+                self._open_device()
+            if not self._running:
+                self._capture.__enter__()
+                try:
+                    self._playback.__enter__()
+                except (RuntimeError, ValueError, OSError):
+                    try:
+                        self._capture.__exit__(None, None, None)
+                    except (RuntimeError, ValueError, OSError):
+                        logger.exception("Fermeture de la capture après échec")
+                    raise
+                self._running = True
+                self._frames_read = 0
+                self._clock_start = time.monotonic()
+                self._audio_thread = threading.Thread(
+                    target=self._audio_loop,
+                    name="pedalboard-audio",
+                    daemon=True,
+                )
+                self._audio_thread.start()
+            if unmute:
+                self._muted = False
+            self._apply_gain()
+
+    def stop(self) -> None:
+        """Coupe la sortie sans fermer la carte (équivalent du mute pyo)."""
+        with self._lock:
+            self._muted = True
+            self._apply_gain()
+
+    def close(self) -> None:
+        """Arrête les streams et ferme les périphériques audio."""
+        if self.recording:
+            self.stop_recording()
+        with self._lock:
+            self._running = False
+            thread = self._audio_thread
+            self._audio_thread = None
+            capture = self._capture
+            playback = self._playback
+            self._capture = None
+            self._playback = None
+
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.warning("Le thread audio ne s'est pas arrêté à temps")
+
+        for stream in (capture, playback):
+            if stream is None:
+                continue
+            try:
+                if stream.running:
+                    stream.__exit__(None, None, None)
+                else:
+                    stream.close()
+            except (RuntimeError, ValueError, OSError):
+                logger.exception("Fermeture d'un stream audio échouée")
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    # ------------------------------------------------------------------
+    # Audio loop (processing + mix boucle)
+    # ------------------------------------------------------------------
+    def _audio_loop(self) -> None:
+        capture = self._capture
+        playback = self._playback
+        if capture is None or playback is None:
+            return
+
+        pending = np.empty((self.num_input_channels, 0), dtype=np.float32)
+        block = self._capture_block
+        logger.info(
+            "Thread audio démarré : blocs de %s frames (%.1f ms)",
+            block,
+            block / self._sample_rate * 1000.0,
+        )
+        try:
+            while self._running:
+                chunk = capture.read(0)
+                if chunk.size:
+                    self._last_input = chunk
+                    self._frames_read += chunk.shape[1]
+                    pending = np.concatenate([pending, chunk], axis=1)
+
+                while pending.shape[1] >= block:
+                    if not self._running:
+                        break
+                    segment = np.ascontiguousarray(pending[:, :block])
+                    pending = pending[:, block:]
+                    self._process_block(segment, playback)
+
+                if pending.shape[1] < block:
+                    time.sleep(CAPTURE_POLL_S)
+        except (RuntimeError, ValueError, OSError):
+            logger.exception("Le thread audio s'est arrêté sur une erreur")
+        finally:
+            logger.info("Thread audio terminé")
+
+    def _process_block(
+        self, segment: np.ndarray, playback: PedalboardAudioStream
+    ) -> None:
+        with self._lock:
+            board = self._board
+            loop = self._loop
+            muted = self._muted
+
+        wet = np.asarray(board.process(segment, self.sample_rate, reset=False))
+        wet = np.asarray(wet, dtype=np.float32)
+        if wet.shape[0] == 1 and self.num_output_channels > 1:
+            wet = np.repeat(wet, self.num_output_channels, axis=0)
+
+        # Enregistrement et analyse sont alimentés ici, sans capture
+        # secondaire (la carte est ouverte en exclusif). ``put_nowait`` ne
+        # bloque jamais le thread audio : en cas de retard du consommateur, le
+        # bloc est simplement ignoré plutôt que d'ajouter de la latence.
+        record_queue = self._record_queue
+        if record_queue is not None:
+            try:
+                record_queue.put_nowait(segment)
+            except queue.Full:
+                pass
+
+        listeners = self._listeners
+        for listener in listeners:
+            try:
+                listener(segment, wet)
+            except Exception:  # un listener ne doit jamais tuer le thread audio
+                logger.exception("Listener audio en erreur")
+
+        mixed = wet
+        if loop is not None:
+            extra = loop.next_block(wet.shape[1])
+            if extra is not None and not muted:
+                if extra.shape != wet.shape:
+                    extra = np.resize(extra, wet.shape)
+                mixed = wet + extra
+                peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
+                if peak > MIX_CEILING:
+                    mixed = mixed * (MIX_CEILING / peak)
+            if loop.finished:
+                self._finish_loop(loop)
+
+        playback.write(mixed, self.sample_rate)
+
+    def _finish_loop(self, loop: LoopPlayback) -> None:
+        with self._lock:
+            if self._loop is loop:
+                self._loop = None
+                self._loop_finished = loop
+        logger.info("Lecture terminée : %s", loop.path)
+
+    # ------------------------------------------------------------------
+    # Listeners (analyse, monitoring)
+    # ------------------------------------------------------------------
+    def add_listener(
+        self, listener: Callable[[np.ndarray, np.ndarray], None]
+    ) -> None:
+        """Enregistre un callback ``(dry, wet)`` appelé à chaque bloc.
+
+        Le callback tourne dans le thread audio : il doit être **non
+        bloquant** (déposer les échantillons dans une file bornée et rendre la
+        main immédiatement). ``dry`` est l'entrée brute, ``wet`` la sortie
+        post-effets (avant mix de la boucle).
         """
-        if position == 0:
-            return self.input_stream
-        elif 0 < position <= len(self.effects_chain):
-            return self.effects_chain[position - 1]["instance"]
-        else:
-            raise IndexError("Invalid position for adding an effect.")
-        
-    def _stop_all_chain(self):
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners = (*self._listeners, listener)
+                logger.info("Listener audio ajouté : %r", listener)
+
+    def remove_listener(
+        self, listener: Callable[[np.ndarray, np.ndarray], None]
+    ) -> None:
+        with self._lock:
+            # Comparaison par égalité (pas identité) : un bound method est
+            # recréé à chaque accès à ``self._on_audio``.
+            self._listeners = tuple(
+                existing for existing in self._listeners if existing != listener
+            )
+            logger.info("Listener audio retiré : %r", listener)
+
+    # ------------------------------------------------------------------
+    # Lecture des enregistrements (looper)
+    # ------------------------------------------------------------------
+    @property
+    def playback(self) -> LoopPlayback | None:
+        return self._loop
+
+    def play_recording(
+        self,
+        filename: str,
+        *,
+        loop: bool = True,
+        volume: float = 1.0,
+    ) -> dict[str, Any]:
+        """Charge un WAV de ``records/`` et le mixe avec le signal live."""
+        path = (
+            filename
+            if os.path.isabs(filename)
+            else os.path.join(records_folder, filename)
+        )
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Enregistrement introuvable : {path}")
+        if not self.is_running:
+            raise RuntimeError("Audio stream is not running")
+
+        playback = self._load_loop(path, loop=loop, volume=volume)
+        with self._lock:
+            self._loop = playback
+            self._loop_finished = None
+        logger.info(
+            "Lecture démarrée : %s (%.2f s, boucle=%s, volume=%.2f)",
+            path,
+            playback.duration_s,
+            playback.loop,
+            playback.volume,
+        )
+        return playback.descriptor()
+
+    def _load_loop(
+        self, path: str, *, loop: bool, volume: float
+    ) -> LoopPlayback:
+        with AudioFile(path) as raw:
+            duration = raw.frames / raw.samplerate if raw.samplerate else 0.0
+            if duration > MAX_LOOP_SECONDS:
+                raise ValueError(
+                    f"Enregistrement trop long ({duration:.0f} s, "
+                    f"max {MAX_LOOP_SECONDS:.0f} s)"
+                )
+            source = raw.resampled_to(self.sample_rate)
+            data = source.read(source.frames)
+
+        if data.shape[0] == 1:
+            data = np.vstack([data[0], data[0]])
+        data = np.ascontiguousarray(data[: self.num_output_channels], dtype=np.float32)
+        return LoopPlayback(
+            path,
+            data,
+            loop=loop,
+            volume=volume,
+            sample_rate=self.sample_rate,
+        )
+
+    def stop_playback(self) -> dict[str, Any] | None:
+        """Arrête la boucle en cours et retourne son descripteur."""
+        with self._lock:
+            loop = self._loop
+            self._loop = None
+        if loop is None:
+            return None
+        loop.finished = True
+        logger.info("Lecture arrêtée : %s", loop.path)
+        return loop.descriptor()
+
+    def playback_status(self) -> dict[str, Any] | None:
+        loop = self._loop
+        if loop is not None:
+            return loop.descriptor()
+        if self._loop_finished is not None:
+            return self._loop_finished.descriptor()
+        return None
+
+    # ------------------------------------------------------------------
+    # Volume / mute
+    # ------------------------------------------------------------------
+    def _gain_db(self) -> float:
+        if self._muted or self._volume <= 0.0:
+            return -100.0
+        return 20.0 * math.log10(self._volume)
+
+    def _apply_gain(self) -> None:
+        self._output_gain.gain_db = self._gain_db()
+
+    @property
+    def global_volume(self) -> float:
+        return self._volume
+
+    @global_volume.setter
+    def global_volume(self, value: float) -> None:
+        self._volume = max(float(value), 0.0)
+        self._apply_gain()
+
+    def mute(self) -> None:
         self.stop()
-        for effect in self.pyo_effects_chain:
-            effect.stop()
-        self.input_stream.stop()
 
-    def _start_all_chain(self):
-        for effect in self.pyo_effects_chain:
-            effect.play()
-        self.input_stream.play()
+    def unmute(self) -> None:
+        self.start()
 
-    def _rebuild_chain(self):
-        """
-        Rebuild the internal stream chain to ensure all effects are connected correctly.
-        """
-        stream = self.input_stream
-        for effect in self.pyo_effects_chain:
-            effect.setInput(stream)
-            stream = effect
+    # ------------------------------------------------------------------
+    # Effects chain
+    # ------------------------------------------------------------------
+    @property
+    def effects_chain(self) -> list[dict[str, object]]:
+        return [slot.descriptor() for slot in self._slots]
 
-    # Public Methods
-    def add_effect(self, position, effect, **kwargs):
-        """
-        Add an effect to the effects chain at a specific position.
-        :param position: The position in the chain where the effect will be added.
-        :param effect: A pyo effect class (e.g., pyo.Chorus, pyo.Delay).
-        :param kwargs: Parameters to initialize the effect.
-        """
-        if position is None:
-            position = len(self.effects_chain)
-        if position < 0 or position > len(self.effects_chain):
-            raise IndexError("Invalid position for adding an effect.")
+    def _rebuild_board(self) -> None:
+        plugins = [plugin for slot in self._slots for plugin in slot.plugins]
+        plugins.append(self._output_gain)
+        self._board = Pedalboard(plugins)
 
-        if not hasattr(effect, "setInput"):
-            raise AttributeError("L'effet choisi n'at pas de méthode setInput, impossible de l'ajouté!")
-        
-        self._stop_all_chain()
-        new_effect = effect(self.input_stream, **kwargs)
+    @staticmethod
+    def _effect_path(effect: str | type) -> str:
+        if isinstance(effect, str):
+            return effect
+        if isinstance(effect, type):
+            return f"{effect.__module__}.{effect.__name__}"
+        raise TypeError("effect doit être un chemin 'module.Classe' ou une classe")
 
-        self.effects_chain.insert(position, {"effect": effect.__module__ + "." + effect.__name__, "params": kwargs})
-        self.pyo_effects_chain.insert(position, new_effect)
+    def add_effect(
+        self,
+        position: int | None,
+        effect: str | type,
+        **kwargs: Any,
+    ) -> None:
+        """Ajoute un effet à la position donnée (None = fin de chaîne)."""
+        with self._lock:
+            if position is None:
+                position = len(self._slots)
+            if position < 0 or position > len(self._slots):
+                raise IndexError("Invalid position for adding an effect.")
 
-        self._rebuild_chain()
-        self._set_output()
-        self._start_all_chain()
+            slot = EffectSlot.create(self._effect_path(effect), kwargs)
+            self._slots.insert(position, slot)
+            self._rebuild_board()
+            logger.info(
+                "Effet ajouté à la position %s : %s %s",
+                position,
+                slot.path,
+                slot.params,
+            )
 
-    def remove_effect(self, index):
-        """
-        Remove an effect from the effects chain by its index.
-        :param index: The index of the effect to remove.
-        """
-        if 0 <= index < len(self.pyo_effects_chain):
-            self._stop_all_chain()
-            # Stop and remove the effect
-            self.effects_chain.pop(index)
-            effect_to_remove = self.pyo_effects_chain.pop(index)
-            effect_to_remove.stop()
+    def remove_effect(self, index: int) -> None:
+        """Retire l'effet à l'index donné."""
+        with self._lock:
+            if index < 0 or index >= len(self._slots):
+                raise IndexError("Invalid index for removing an effect.")
+            slot = self._slots.pop(index)
+            self._rebuild_board()
+            logger.info("Effet retiré à l'index %s : %s", index, slot.path)
 
-            # Rebuild the chain to ensure proper connections
-            self._rebuild_chain()
-            self._set_output()
-            self._start_all_chain()
-        else:
-            raise IndexError("Invalid index for removing an effect.")
-
-    def update_effect(self, position, **kwargs):
-        """
-        Add an effect to the effects chain at a specific position.
-        :param position: Position in the effect chain of the effect to be updated.
-        :param kwargs: New parameters for the effect.
-        """
+    def update_effect(self, position: int | None, **kwargs: Any) -> None:
+        """Met à jour les paramètres de l'effet à la position donnée."""
         if position is None:
             raise IndexError("Index can't be None to select an effect.")
-        if position < 0 or position > len(self.effects_chain):
-            raise IndexError("Invalid position can't find an effect at this position.")
-        #TODO : faut tester les parametres pour voir si un attribut setLeparametre existe et on utilise
-        # l'attribu en question avec la valeur du parametre
-        # On fait ça pour tous les paramètres
-        # On vérifie qu'on ne touche pas au paramètre input
-        
-        #if not hasattr(effect, "setInput"):
-        #    raise AttributeError("L'effet choisi n'at pas de méthode setInput, impossible de l'ajouté!")
-        #
-        #self._stop_all_chain()
-        #new_effect = effect(self.input_stream, **kwargs)
-        #self.effects_chain.insert(position, {"effect": effect.__module__ + "." + effect.__name__, "params": kwargs})
-        #self.pyo_effects_chain.insert(position, new_effect)
-        #self._rebuild_chain()
-        #self._set_output()
-        #self._start_all_chain()
+        with self._lock:
+            if position < 0 or position >= len(self._slots):
+                raise IndexError("Invalid position, no effect at this index.")
+            slot = self._slots[position]
+            slot.params.update(kwargs)
+            slot.rebuild()
+            self._rebuild_board()
+            logger.info(
+                "Effet mis à jour à la position %s : %s %s",
+                position,
+                slot.path,
+                slot.params,
+            )
 
-
-    def _set_output(self):
-        """
-        Get the final output of the effects chain.
-        :return: The last effect in the chain or the input stream if no effects are applied.
-        """
-        # TODO : ajouter une logique pour relancer l'out si il joue déjà
-        self.output.stop()
-        if self.pyo_effects_chain:
-            self.output = self.pyo_effects_chain[-1] * self.global_volume
-        else:
-            self.output = self.input_stream * self.global_volume
-
-    def start(self):
-        """
-        Start the stream by playing the final output.
-        """
-        self.output.out()
-
-    def stop(self):
-        """
-        Stop the stream by stopping the final output.
-        """
-        self.output.stop()
-
-    def save_effects(self, effect_name):
-        """
-        Save the effects chain to a JSON file in the APP_BASE_FOLDER/APP_FOLDERS["SAVED_EFFECTS"] directory.
-        :param effect_name: The base name of the effect file (without .json).
-        """
-
-        # Construct the full file path
-        filepath = os.path.join(effects_folder, f"{effect_name}.json")
-
-        # Write to the JSON file
-        saved_data = {
-            "effect_chain": self.effects_chain,
-            "global_volume": self.global_volume,
-        }
-        with open(filepath, "w") as f:
-            json.dump(saved_data, f, indent=4)
-        print(f"Effects chain saved to {filepath}")
-
-
-    # Recording API
-    def start_recording(self, filename: str | None = None):
-        """
-        Start recording the current output to a WAV file under 'records_folder'.
-        If filename is None, generate a timestamped filename.
-        """
-        if filename is None:
-            import datetime
-            filename = f"record_{self.input_channel}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-
-        filepath = os.path.join(records_folder, filename)
-
-        if self.recording:
-            raise RuntimeError("Recording already in progress")
-
-        # Ensure output is up-to-date
-        self._set_output()
-
-        # Create and start recorder
-        try:
-            # Record expects a PyoObject input; use the final output
-            self.recorder = pyo.Record(self.output, filename=filepath)
-            # play/start naming differs, but play() is commonly present on pyo objects
-            self.recorder.play()
-
-            self.recording = True
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+    def save_effects(self, effect_name: str) -> str:
+        """Sauvegarde la chaîne dans ``saved_effects/<effect_name>.json``."""
+        with self._lock:
+            Path(effects_folder).mkdir(parents=True, exist_ok=True)
+            filepath = os.path.join(effects_folder, f"{effect_name}.json")
+            saved_data = {
+                "engine": "pedalboard",
+                "effect_chain": self.effects_chain,
+                "global_volume": self._volume,
+            }
+            with open(filepath, "w", encoding="utf-8") as file:
+                json.dump(saved_data, file, indent=4)
+            logger.info("Chaîne d'effets sauvegardée dans %s", filepath)
             return filepath
-        except Exception:
-            self.recorder = None
-            raise
 
-    def stop_recording(self):
-        """
-        Stop a running recording and return the recorded filepath (if available).
-        """
-        if not self.recording or self.recorder is None:
-            raise RuntimeError("No recording in progress")
-
-        try:
-            if hasattr(self.recorder, 'stop'):
-                self.recorder.stop()
-            # try to get filename attribute if provided by the recorder
-            filepath = getattr(self.recorder, 'filename', None)
-            # clear recorder
-            self.recorder = None
-            self.recording = False
-            return filepath
-        except Exception:
-            self.recorder = None
-            self.recording = False
-            raise
-
-
-    def load_effects(self, effect_name):
-        """
-        Load the effects chain from a JSON file in the 'effects_folder' directory.
-        :param effect_name: The base name of the effect file (without .json).
-        """
-        # Construct the full file path
+    def load_effects(self, effect_name: str) -> None:
+        """Charge une chaîne depuis ``saved_effects/<effect_name>.json``."""
         filepath = os.path.join(effects_folder, f"{effect_name}.json")
-
-        # Check if the file exists
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Effect file '{filepath}' not found.")
 
-        # Read the JSON file
-        with open(filepath, "r") as f:
-            saved_data = json.load(f)
-            self.effects_chain = saved_data.get("effect_chain",[])
-            self.global_volume = saved_data.get("global_volume",1.0)
+        with open(filepath, encoding="utf-8") as file:
+            saved_data = json.load(file)
 
+        if isinstance(saved_data, list):
+            chain = saved_data
+            volume = 1.0
+        else:
+            chain = saved_data.get("effect_chain", [])
+            volume = float(saved_data.get("global_volume", 1.0))
 
-        # Recreate the effects chain
-        self._stop_all_chain()
-        self.pyo_effects_chain = [
-            self._get_effect_class_from_name(effect_infos["effect"])(self.input_stream,**effect_infos["params"])
-            for effect_infos in self.effects_chain
+        if not isinstance(chain, list):
+            raise TypeError(f"Format de chaîne invalide dans {filepath}")
+
+        # Construit la nouvelle chaîne avant de remplacer l'ancienne : en cas
+        # d'effet inconnu, la chaîne en cours reste intacte.
+        new_slots = [
+            EffectSlot.create(
+                str(effect_infos["effect"]),
+                effect_infos.get("params", {}),
+            )
+            for effect_infos in chain
         ]
-        self._rebuild_chain()
-        self._start_all_chain()
-        print(f"Effects chain loaded from {filepath}")
 
-    def __del__(self):
+        with self._lock:
+            self._slots = new_slots
+            self._volume = max(volume, 0.0)
+            self._rebuild_board()
+            self._apply_gain()
+        logger.info("Chaîne d'effets chargée depuis %s", filepath)
+
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+    def start_recording(self, filename: str | None = None) -> str:
+        """Démarre l'enregistrement de l'entrée brute (pas de la sortie).
+
+        La capture principale est ouverte en exclusif sur le device matériel
+        direct : impossible d'ouvrir une seconde capture. Le thread audio
+        dépose donc chaque bloc dry dans une file bornée, consommée par un
+        thread d'écriture dédié. Le ``put_nowait`` ne bloque jamais le jeu.
         """
-        Ensure the input stream and all effects are properly stopped and cleaned up.
-        """
-        self._stop_all_chain()
-        # Stop recorder if active. Best effort: during interpreter shutdown,
-        # logging/shutdown hooks may already be gone, so swallow everything.
-        if (
-            getattr(self, 'recording', False)
-            and getattr(self, 'recorder', None) is not None
-            and hasattr(self.recorder, 'stop')
-        ):
-            self.recorder.stop()
+        with self._record_lock:
+            if self.recording:
+                raise RuntimeError("Recording already in progress")
+            if not self.is_running:
+                raise RuntimeError("Audio stream is not running")
+
+            if filename is None:
+                import datetime
+
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"record_{self.input_channel}_{timestamp}.wav"
+
+            filename = Path(filename).name
+            Path(records_folder).mkdir(parents=True, exist_ok=True)
+            filepath = os.path.join(records_folder, filename)
+
+            writer = AudioFile(
+                filepath,
+                "w",
+                samplerate=float(self.sample_rate),
+                num_channels=self.num_input_channels,
+            )
+
+            self._record_writer = writer
+            self._record_path = filepath
+            self._record_queue = queue.Queue(maxsize=RECORD_QUEUE_SIZE)
+            self._recording = True
+            self.recording = True
+            self._record_thread = threading.Thread(
+                target=self._record_loop,
+                name="pedalboard-recorder",
+                daemon=True,
+            )
+            self._record_thread.start()
+            logger.info("Enregistrement démarré : %s (entrée brute)", filepath)
+            return filepath
+
+    def _record_loop(self) -> None:
+        record_queue = self._record_queue
+        if record_queue is None:
+            return
+        while True:
+            try:
+                chunk = record_queue.get(timeout=0.1)
+            except queue.Empty:
+                if not self._recording:
+                    break
+                continue
+
+            writer = self._record_writer
+            if writer is None:
+                break
+            try:
+                writer.write(chunk)
+            except (RuntimeError, ValueError, OSError):
+                logger.exception("Erreur pendant l'enregistrement")
+                self._recording = False
+                break
+
+    def stop_recording(self) -> str | None:
+        """Arrête l'enregistrement et retourne le chemin du fichier."""
+        with self._record_lock:
+            if not self.recording:
+                raise RuntimeError("No recording in progress")
+
+            self._recording = False
+            self.recording = False
+            # Détache la file : le thread audio cesse immédiatement d'y
+            # déposer, puis le thread d'écriture draine ce qui reste.
+            record_queue = self._record_queue
+            self._record_queue = None
+            if self._record_thread is not None:
+                self._record_thread.join(timeout=2.0)
+                if self._record_thread.is_alive():
+                    logger.warning("Le thread d'enregistrement ne s'est pas arrêté à temps")
+                self._record_thread = None
+            if record_queue is not None:
+                record_queue.queue.clear()
+
+            if self._record_writer is not None:
+                self._record_writer.close()
+                self._record_writer = None
+
+            filepath = self._record_path
+            self._record_path = None
+            logger.info("Enregistrement arrêté : %s", filepath)
+            return filepath
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+    def read_available(self) -> np.ndarray:
+        """Dernier bloc d'entrée capté (diagnostic / monitoring)."""
+        return self._last_input
+
+    @property
+    def buffer_size(self) -> int:
+        return self._buffer_size
+
+    @property
+    def capture_block_size(self) -> int:
+        return self._capture_block
+
+    @property
+    def sample_rate(self) -> float:
+        return float(self._sample_rate)
+
+    @property
+    def latency_ms(self) -> float:
+        """Latence logicielle estimée (bloc de capture + FIFO de sortie)."""
+        return (self._capture_block + self._buffer_size) / self.sample_rate * 1000.0
+
+    @property
+    def dropped_input_frame_count(self) -> int:
+        """Frames manquantes estimées d'après l'horloge murale."""
+        if not self._running or self._clock_start <= 0:
+            return 0
+        expected = (time.monotonic() - self._clock_start) * self.sample_rate
+        return max(0, int(expected - self._frames_read))
+
+    @property
+    def buffered_input_sample_count(self) -> int:
+        capture = self._capture
+        if capture is None:
+            return 0
+        return int(capture.buffered_input_sample_count or 0)
+
+    def __str__(self) -> str:
+        state = "running" if self.is_running else "stopped"
+        return (
+            f"AudioStream(input={self.input_device!r}, "
+            f"output={self.output_device!r}, "
+            f"sample_rate={self.sample_rate:g}, buffer_size={self.buffer_size}, "
+            f"effects={len(self._slots)}, {state})"
+        )
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

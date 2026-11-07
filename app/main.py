@@ -1,159 +1,206 @@
+"""Point d'entrée Monkey Resonance — moteur audio Pedalboard.
+
+Le serveur pyo a été remplacé par ``pedalboard.io.AudioStream``. Les noms
+``AudioStream``, ``audio_devices`` et ``inputs`` restent exposés dans
+``sys.modules["__main__"]`` : l'API REST et le serveur MCP s'appuient dessus.
+"""
+
+from __future__ import annotations
+
 import argparse
+import atexit
 import logging
 import os
+import signal
 import sys
-from threading import Thread
+from dataclasses import replace
+from threading import Event, Thread
+from typing import Any
 
-import pyo
-from libs.audio_stream import AudioStream  # noqa: F401 - Used by server.server via sys.modules
+from libs.audio_devices import AudioConfig, list_devices, load_config
+from libs.audio_stream import AudioDeviceError, AudioStream
+from libs.utils import APP_BASE_FOLDER, _check_and_create_app_folders
 
-# Add app directory to path for server.server import
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from libs.utils import (
-    APP_BASE_FOLDER,
-    _check_and_create_app_folders,
-)
-
-# Configure logging early
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--with_api", action="store_true")
+# Contrat historique lu par app/monkey_api/api.py et app/server/server.py via
+# sys.modules["__main__"].__dict__. Ne pas renommer ni supprimer.
+audio_devices: tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]] = ({}, {})
+inputs: list[AudioStream] = []
+stream: AudioStream | None = None
 
-args = parser.parse_args()
 
-_check_and_create_app_folders(APP_BASE_FOLDER)
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Monkey Resonance audio engine")
+    parser.add_argument(
+        "--with_mcp",
+        action="store_true",
+        help="Démarre le MCP (activé par défaut ; conservé pour compatibilité).",
+    )
+    parser.add_argument(
+        "--with_api",
+        action="store_true",
+        help="Démarre l'API REST à la place du MCP (même port).",
+    )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="Liste les périphériques Pedalboard puis quitte.",
+    )
+    parser.add_argument("--buffer-size", type=int, default=None)
+    parser.add_argument("--sample-rate", type=int, default=None)
+    return parser.parse_args()
 
-if not os.path.exists('/dev/snd'):
-    logger.error("No audio shared with docker")
-    raise RuntimeError("No audio shared with docker")
 
-# Detect audio devices using hardcoded values for AudioBox USB 96 (hw:0,0)
-# Note: We use device 0 which corresponds to hw:0,0 in ALSA
-logger.info("Using AudioBox USB 96 configuration (hw:0,0)...")
-input_audio_device = 0
-output_audio_device = 0
-input_nbchannels = 2  # AudioBox USB 96 is stereo
-output_nbchannels = 2  # AudioBox USB 96 is stereo
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    )
 
-logger.info(f"  Input device: {input_audio_device} ({input_nbchannels} channels)")
-logger.info(f"  Output device: {output_audio_device} ({output_nbchannels} channels)")
 
-# Create and boot the pyo server with correct settings
-logger.info("Creating and booting Pyo Server...")
+def _print_devices() -> None:
+    device_inputs, device_outputs = list_devices()
+    print("Entrées :")
+    for index, device in device_inputs.items():
+        marker = " (défaut)" if device["default"] else ""
+        print(f"  {index}: {device['name']}{marker}")
+    print("Sorties :")
+    for index, device in device_outputs.items():
+        marker = " (défaut)" if device["default"] else ""
+        print(f"  {index}: {device['name']}{marker}")
 
-# Pyo v0.8.x: create server with stereo channels
-# Note: Pyo uses PortAudio to access audio devices, which may not list ALSA devices correctly in containers
-# We create the server without specifying devices and let Pyo use default devices
-# Creating with nchnls=2 for stereo (required by pyo)
-s = pyo.Server(nchnls=2)
 
-logger.info("Booting Pyo Server...")
-try:
-    s.boot()
-    logger.info("Pyo Server booted successfully!")
-except Exception as e:
-    logger.error(f"Failed to boot Pyo Server: {e}")
-    raise
+def _start_engine(config: AudioConfig) -> AudioStream:
+    engine = AudioStream(
+        input_channel=0,
+        input_device=config.input_device,
+        output_device=config.output_device,
+        record_device=config.record_device,
+        sample_rate=config.sample_rate,
+        buffer_size=config.buffer_size,
+        num_input_channels=config.input_channels,
+        num_output_channels=config.output_channels,
+        global_volume=config.global_volume,
+        allow_feedback=config.allow_feedback,
+        start_muted=config.start_muted,
+    )
+    engine.start(unmute=not config.start_muted)
 
-logger.info("Starting Pyo Server...")
-s.start()
-logger.info("Pyo server started. You can now interact with Pyo objects.")
+    logger.info(
+        "Moteur audio prêt : in=%r out=%r sr=%g buffer=%s effects=%s",
+        config.input_device,
+        config.output_device,
+        engine.sample_rate,
+        engine.buffer_size,
+        len(engine.effects_chain),
+    )
+    logger.info(
+        "Enregistrement et analyse alimentés par le moteur (pas de capture secondaire)"
+    )
+    logger.info(
+        "Latence logicielle : %.2f ms (capture %s frames + sortie %s frames)",
+        engine.latency_ms,
+        engine.capture_block_size,
+        engine.buffer_size,
+    )
+    if config.start_muted:
+        logger.info("Sortie démarrée en mute (AUDIO_START_MUTED=1)")
+    return engine
 
-# Give the server time to initialize
-import time
-time.sleep(0.5)
 
-# Prepare audio input handles (create only when Server exists and channels)
-# Note: Input() uses the server's configured input device, not a parameter
-inputs = [pyo.Input(i) for i in range(input_nbchannels)]
-
-# Detect and expose audio devices to __main__ for MCP server
-try:
-    import sounddevice as sd
-    logger.info("Detecting audio devices...")
-    
-    # Get input devices
-    input_devices = {}
-    try:
-        for i, dev in enumerate(sd.query_devices()):
-            if dev['max_input_channels'] > 0:
-                input_devices[i] = {
-                    'index': i,
-                    'name': dev['name'],
-                    'channels': dev['max_input_channels'],
-                    'hostapi': dev['hostapi'],
-                    'sample_rate': dev['default_samplerate']
-                }
-        logger.info(f"Found {len(input_devices)} input device(s): {list(input_devices.keys())}")
-    except Exception as e:
-        logger.warning(f"Could not query input devices: {e}")
-    
-    # Get output devices
-    output_devices = {}
-    try:
-        for i, dev in enumerate(sd.query_devices()):
-            if dev['max_output_channels'] > 0:
-                output_devices[i] = {
-                    'index': i,
-                    'name': dev['name'],
-                    'channels': dev['max_output_channels'],
-                    'hostapi': dev['hostapi'],
-                    'sample_rate': dev['default_samplerate']
-                }
-        logger.info(f"Found {len(output_devices)} output device(s): {list(output_devices.keys())}")
-    except Exception as e:
-        logger.warning(f"Could not query output devices: {e}")
-    
-except ImportError:
-    logger.warning("sounddevice not available, using pyo device detection")
-    input_devices = {}
-    output_devices = {}
-
-# Store audio_devices in __main__ for MCP server to access
-import sys
-import types
-
-# Create a __main__ module to hold our variables
-if '__main__' not in sys.modules:
-    main_module = types.ModuleType('__main__')
-    sys.modules['__main__'] = main_module
-else:
-    main_module = sys.modules['__main__']
-
-# Expose all necessary variables to __main__ for MCP access
-main_module.AudioStream = AudioStream
-main_module.audio_devices = (input_devices, output_devices)
-main_module.inputs = inputs
-main_module.pyo_server = s
-
-logger.info("Audio devices exposed to __main__: audio_devices = (inputs, outputs)")
-logger.info(f"  Input devices: {len(input_devices)}")
-logger.info(f"  Output devices: {len(output_devices)}")
-
-# Always start MCP server by default
-logger.info("Starting MCP server")
-
-def run_mcp():
+def _run_mcp() -> None:
     from server.server import start_mcp
+
     start_mcp()
 
-# Start the MCP server in the main thread to keep it alive
-run_mcp()
 
-if args.with_api:    
-    # Start the REST API server
-    logger.info("Starting REST API server")
+def _run_api() -> None:
+    from monkey_api.api import start_api
 
-    def run_api():
-        from monkey_api.api import start_api
-        start_api()
+    start_api()
 
 
-    # Start the REST API server in a non-daemon thread
-    api_thread = Thread(target=run_api, daemon=False)
-    api_thread.start()
+def _wait_for_shutdown() -> None:
+    shutdown = Event()
 
-    # print("MCP server started. Pour plus d'infos : help()")
-    print("REST API server started. Documentation disponible sur /docs")
+    def _handle_signal(signum: int, _frame: object) -> None:
+        logger.info("Signal %s reçu, arrêt du moteur audio", signum)
+        shutdown.set()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    shutdown.wait()
+
+
+def main() -> int:
+    global audio_devices, inputs, stream
+
+    _configure_logging()
+    args = _parse_args()
+
+    if args.with_mcp and args.with_api:
+        print(
+            "Impossible de lancer le mcp et l'api en même temps "
+            "(ils utilisent le même port)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.list_devices:
+        _print_devices()
+        return 0
+
+    _check_and_create_app_folders(APP_BASE_FOLDER)
+
+    if not os.path.exists("/dev/snd"):
+        logger.error("No audio shared with docker (/dev/snd absent)")
+        return 1
+
+    try:
+        config = load_config()
+    except (RuntimeError, ValueError) as exc:
+        logger.error("Configuration audio invalide : %s", exc)
+        return 1
+
+    config = replace(
+        config,
+        buffer_size=args.buffer_size or config.buffer_size,
+        sample_rate=args.sample_rate or config.sample_rate,
+    )
+
+    try:
+        stream = _start_engine(config)
+    except AudioDeviceError as exc:
+        logger.error("%s", exc)
+        _print_devices()
+        return 1
+
+    inputs = [stream]
+    audio_devices = list_devices()
+    atexit.register(stream.close)
+
+    # Le MCP est activé par défaut (comportement de `main`) ; `--with_api`
+    # le remplace, car les deux serveurs utilisent le même port.
+    if not args.with_api:
+        logger.info("Starting MCP server")
+        Thread(target=_run_mcp, name="mcp-server", daemon=True).start()
+
+    if args.with_api:
+        logger.info("Starting REST API server")
+        Thread(target=_run_api, name="api-server", daemon=True).start()
+        print("REST API server started. Documentation disponible sur /docs")
+
+    try:
+        _wait_for_shutdown()
+    except KeyboardInterrupt:
+        logger.info("Interruption clavier, arrêt")
+    finally:
+        if stream is not None:
+            stream.close()
+        logger.info("Moteur audio arrêté")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

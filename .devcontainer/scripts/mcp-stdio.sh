@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Script pour démarrer le MCP Monkey Resonance via stdio pour opencode
-# Compatible avec l'hôte et le container
+# Démarrer le MCP Monkey Resonance en transport stdio, pour un client MCP
+# (opencode, etc.) qui lance lui-même le process.
+#
+# Le transport par défaut du projet est HTTP streamable ; ce script le force
+# en stdio via MCP_TRANSPORT=stdio. Il lance le moteur audio Pedalboard et le
+# serveur MCP dans le même process.
 
 set -euo pipefail
 
 # Détecter si nous sommes dans le container ou sur l'hôte
 if [ -d "/base_app" ]; then
     REPO_DIR="/base_app"
-    APP_DIR="/base_app/app"
 else
-    REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-    APP_DIR="$REPO_DIR/app"
+    REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 fi
+APP_DIR="$REPO_DIR/app"
 
-cd "$REPO_DIR"
+cd "$APP_DIR"
 
-# Démarrer le MCP en mode stdio via le script standalone
-exec python3 scripts/run-standalone-mcp-stdio.py
+# stdout est réservé au protocole MCP : les logs applicatifs vont sur stderr.
+export MCP_TRANSPORT=stdio
+export PYTHONUNBUFFERED=1
+exec python main.py --with_mcp

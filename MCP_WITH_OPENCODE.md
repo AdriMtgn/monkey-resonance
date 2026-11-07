@@ -19,10 +19,26 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `add_effect_to_input(index, effect_path, params, position)` | Ajoute un effet à une entrée |
 | `update_effect(index, effect_path, params, position)` | Met à jour un effet |
 | `remove_effect_from_input(index, effect_index)` | Supprime un effet de la chaîne |
-| `start_input_recording(index, filename)` | Démarrer l'enregistrement audio |
-| `stop_input_recording(index)` | Arrêter l'enregistrement |
+| `save_input_effects(index, name)` | Sauvegarde la chaîne dans un JSON |
+| `load_input_effects(index, name)` | Recharge une chaîne sauvegardée |
+| `start_input_recording(index, filename, wet)` | Enregistre l'entrée brute (défaut) ou la sortie effet (`wet=true`) |
+| `stop_input_recording(index, wet)` | Arrête l'enregistrement correspondant |
+| `list_recordings()` | Liste les WAV de `records/` (nom, durée, taille) |
+| `play_recording(index, filename, loop, volume)` | Relit un WAV dans le moteur, mixé avec le live |
+| `stop_playback(index)` | Arrête la lecture en cours |
+| `playback_status(index)` | État de la boucle (fichier, position, volume) |
 | `list_inputs_outputs()` | Liste des devices audio d'entrée/sortie |
+| `set_output_volume(index, volume)` | Volume de sortie (gain stéréo) |
+| `get_rms_level(index, window_size, wet)` | Niveau RMS / peak / dBFS |
+| `get_pitch_info(index, wet)` | Pitch, note MIDI, confiance |
+| `get_frequency_analysis(index, fft_size, wet)` | Spectre FFT, dominante, bandes |
+| `get_audio_profile(index)` | Profil complet RMS + pitch + spectre |
 | `global_status()` | Vérifie si le système audio fonctionne |
+
+L'enregistrement et l'analyse sont **alimentés par le moteur** (listener +
+file bornée) : ils n'ouvrent pas de capture secondaire et n'ajoutent aucune
+latence au jeu live. Une boucle est mixée dans le bloc de sortie courant, donc
+elle non plus ne retarde pas le live.
 
 ## Utilisation
 
@@ -84,10 +100,10 @@ Utilise le MCP pour démarrer l'enregistrement sur l'entrée 1
 
 ### Fichiers modifiés
 
-- `requirements-dev.txt` : Ajout de `mcp<2` pour la version 1.x
-- `app/monkey_mcp/mcp.py` : Transport streamable-http configuré
-- `.opencode/opencode.jsonc` : Configuration du serveur MCP distant
-- `.devcontainer/scripts/start-mcp.sh` : Script de démarrage du MCP
+- `requirements-dev.txt` : `mcp>=2.0.0` (transport HTTP streamable)
+- `app/server/server.py` : `MCPServer` + `run(transport="streamable-http")`
+- `opencode.jsonc` : serveur MCP distant `http://localhost:8005/mcp`
+- `.devcontainer/scripts/start-mcp.sh` : lance `main.py --with_mcp` (HTTP)
 
 ### Ports utilisés
 
@@ -100,7 +116,7 @@ Utilise le MCP pour démarrer l'enregistrement sur l'entrée 1
 |----------|-------------------|-------------|
 | `MCP_HOST` | `0.0.0.0` | Adresse IP pour le MCP |
 | `MCP_PORT` | `8005` | Port pour le MCP |
-| `MCP_MOUNT_PATH` | `/` | Path de montage pour le MCP |
+| `MCP_TRANSPORT` | `streamable-http` | `streamable-http` (HTTP `/mcp`) ou `stdio` |
 
 ## Dépannage
 
@@ -136,7 +152,7 @@ Sortie attendue : `✓ monkey-resonance  connected`
 ## Notes importantes
 
 1. **Audio access** : `/dev/snd` doit être monté dans le container pour que l'audio fonctionne
-2. **Thread-unsafe** : pyo ne peut être appelé que depuis un seul thread de contrôle
+2. **Thread-unsafe** : Pedalboard/pyo ne peuvent être appelés que depuis un seul thread de contrôle
 3. **Session MCP** : Les outils MCP peuvent être utilisés directement dans les conversations opencode
 4. **Permissions** : Le fichier opencode.jsonc dans le container a des permissions d'écriture pour que l'agent puisse le modifier si nécessaire
 

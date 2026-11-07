@@ -58,7 +58,7 @@ make run-prod-mcp
 ## Devcontainer + agent OpenCode
 
 Le projet se lance en devcontainer : le container fait tourner l'app audio
-(pyo + `/dev/snd`) **et** un serveur OpenCode dans lequel un agent exécute ses
+(Pedalboard + `/dev/snd`) **et** un serveur OpenCode dans lequel un agent exécute ses
 commandes directement dans le container (agent principal et subagents).
 
 ### 1. Build des images
