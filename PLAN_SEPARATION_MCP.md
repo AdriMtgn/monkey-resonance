@@ -1,5 +1,10 @@
 # Plan — Séparation MCP / Serveur audio
 
+> **OBSOLÈTE (2026-11-07)** : ce plan décrit l'architecture pyo
+> (`app/monkey_mcp/mcp.py`, `pyo.Server`) qui n'existe plus. Le moteur actuel
+> est Pedalboard ; voir `ETAT_ACTUEL.md`. La séparation moteur / Control API
+> reste une dette, mais les noms de fichiers et le contexte ont changé.
+>
 > Document de travail pour attaquer la refonte dans un autre chat.
 > Date : 2026-09-26. État : non-root ✅ fait, détection audio ✅ OK (AudioBox USB 96).
 

@@ -39,6 +39,38 @@ docker compose up mkr
 
 Le serveur MCP est accessible sur `http://localhost:8005/mcp`.
 
+## Performance et MIDI
+
+Le moteur expose un contrôleur de performance utilisable sans pédale :
+
+- **presets d'effets** : `list_presets`, `load_preset`, `next_preset`,
+  `previous_preset` (le fader de la piste est conservé) ;
+- **bypass** : `toggle_effect`, `set_effect_enabled` (position ou chemin
+  d'effet) ;
+- **looper** : `loop_toggle` (enregistrer → lire en boucle → arrêter),
+  `loop_record`, `loop_play`, `loop_stop` ;
+- **mapping MIDI** : profils dans `/monkey-resonance/saved_midi_maps/`,
+  chargés par `MKR_MIDI_MAP=<nom>` ou `MKR_MIDI_CONFIG=<chemin>`, sinon
+  `/monkey-resonance/triggers.json`.
+
+Le listener lit le MIDI brut ALSA (`/dev/snd/midiC*D*`, par exemple le port
+DIN de l'AudioBox), car le container n'expose pas `/dev/snd/seq`. Il est actif
+par défaut ; `MKR_MIDI=0` le désactive.
+
+```bash
+# Charger un preset au démarrage
+MKR_START_PRESET=bass_clear_warm_punch make run-mcp
+
+# Charger un profil de mapping au démarrage
+MKR_MIDI_MAP=bass_board make run-mcp
+```
+
+Sans matériel, tout le mapping se teste par MCP avec
+`simulate_midi_event({"type": "control_change", "channel": 0,
+"controller": 21, "value": 127})`, ou par REST avec
+`POST /midi/simulate`. Le détail du format et des actions est dans
+`ETAT_ACTUEL.md` (§6 ter) et l'exemple `triggers.example.json`.
+
 ### Alternatives de démarrage
 
 ```bash

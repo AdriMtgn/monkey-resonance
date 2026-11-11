@@ -13,6 +13,19 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | Outil | Description |
 |-------|-------------|
 | `list_inputs()` | Liste des entrées audio disponibles avec leur état |
+| `get_mixer()` | État complet du mixer : pistes, bus, volumes, balance, routage |
+| `add_input(name, channels)` | Crée une piste indépendante sur des canaux captés |
+| `remove_input(index)` | Retire une piste |
+| `set_input_channels(index, channels)` | Change les canaux captés d'une piste |
+| `set_input_mix(index, volume, balance, left_gain, right_gain)` | Fader, balance et gains L/R d'une piste |
+| `set_route(input_index, output_index, volume)` | Volume d'envoi d'une piste vers un bus |
+| `add_output(name, left_channel, right_channel)` | Crée un bus de sortie stéréo |
+| `remove_output(index)` | Retire un bus |
+| `set_output_channels(index, left_channel, right_channel)` | Mapping physique d'un bus |
+| `set_output_volume(index, volume)` | Volume d'un bus |
+| `mute_output(index)` / `unmute_output(index)` | Mute/unmute d'un bus |
+| `set_master_volume(volume)` | Volume master |
+| `mute_master()` / `unmute_master()` | Mute/unmute global |
 | `get_input_effects(index)` | Récupère la chaîne d'effets d'une entrée |
 | `mute_input(index)` | Coupe le son d'une entrée |
 | `unmute_input(index)` | Réactive le son d'une entrée |
@@ -24,11 +37,10 @@ Le MCP est configuré pour fonctionner dans le **container dev** (`/base_app`). 
 | `start_input_recording(index, filename, wet)` | Enregistre l'entrée brute (défaut) ou la sortie effet (`wet=true`) |
 | `stop_input_recording(index, wet)` | Arrête l'enregistrement correspondant |
 | `list_recordings()` | Liste les WAV de `records/` (nom, durée, taille) |
-| `play_recording(index, filename, loop, volume)` | Relit un WAV dans le moteur, mixé avec le live |
+| `play_recording(index, filename, loop, volume)` | Relit un WAV dans la piste `index`, mixé avec son live |
 | `stop_playback(index)` | Arrête la lecture en cours |
 | `playback_status(index)` | État de la boucle (fichier, position, volume) |
 | `list_inputs_outputs()` | Liste des devices audio d'entrée/sortie |
-| `set_output_volume(index, volume)` | Volume de sortie (gain stéréo) |
 | `get_rms_level(index, window_size, wet)` | Niveau RMS / peak / dBFS |
 | `get_pitch_info(index, wet)` | Pitch, note MIDI, confiance |
 | `get_frequency_analysis(index, fft_size, wet)` | Spectre FFT, dominante, bandes |
@@ -39,6 +51,11 @@ L'enregistrement et l'analyse sont **alimentés par le moteur** (listener +
 file bornée) : ils n'ouvrent pas de capture secondaire et n'ajoutent aucune
 latence au jeu live. Une boucle est mixée dans le bloc de sortie courant, donc
 elle non plus ne retarde pas le live.
+
+Le mixer est **latency first** : le découpage en pistes, les effets, la
+balance, le routage et la somme des bus se font dans le même bloc que la
+capture. Chaque piste a son propre looper ; les paramètres `index` des outils
+d'effets, mute et looper ciblent une piste.
 
 ## Utilisation
 

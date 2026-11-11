@@ -1,5 +1,10 @@
 # USAGE MCP — Guide rapide pour l'ingé son
 
+> **OBSOLÈTE (2026-11-07)** : ce document décrit l'ancien MCP pyo
+> (`list_globals`, `call_method_on_global`, `s` = serveur pyo), qui n'existe
+> plus. Le MCP actuel expose des outils dédiés listés dans `ETAT_ACTUEL.md`
+> (§9) et `MCP_WITH_OPENCODE.md`. Voir aussi `app/server/server.py`.
+
 Contexte
 - Ce MCP est destiné à être utilisé par un ingénieur son virtuel qui assiste ses musiciens en temps réel.
 - Il connaît la librairie pyo et utilise les objets `AudioStream` (dans `app/libs/audio_stream.py`) pour gérer les pistes.
