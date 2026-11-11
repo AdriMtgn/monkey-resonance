@@ -3,7 +3,7 @@ SHELL := /bin/bash
 COMPOSE ?= docker compose
 COMPOSE_DEV ?= docker compose -f docker-compose.yml -f docker-compose.dev.yml
 
-.PHONY: help build build-dev shell shell-dev run run-mcp run-api test lint logs up down restart exec dev-deps clean up-dev agent-serve agent-host agent-password agent
+.PHONY: help build build-dev shell shell-dev run run-mcp run-api test lint logs up down restart exec dev-deps analysis-deps clean up-dev agent-serve agent-host agent-password agent
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -62,6 +62,9 @@ exec: ## Exec an arbitrary command in the container (e.g. make exec CMD="ls -la"
 
 dev-deps: ## Install dev deps (pytest, ruff) on-demand into the running container's venv
 	$(COMPOSE) exec mkr uv pip install -r /base_app/requirements-dev.txt
+
+analysis-deps: ## Install analysis deps (librosa, scipy, soundfile) into the running container's venv
+	$(COMPOSE) exec mkr uv pip install --python /opt/venv/bin/python -r /base_app/requirements-analysis.txt
 
 clean: ## Stop, remove containers, local images and volumes
 	$(COMPOSE) down --rmi local -v

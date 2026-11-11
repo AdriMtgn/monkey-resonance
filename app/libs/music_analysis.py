@@ -884,18 +884,25 @@ _analyzer_lock = threading.Lock()
 def get_analyzer() -> AudioAnalyzer | None:
     """Retourne (et démarre au besoin) l'analyseur global.
 
-    L'analyseur s'appuie sur ``inputs[0]`` exposé dans ``__main__`` par
-    ``main.py``. Retourne ``None`` si aucun input n'est disponible.
+    L'analyseur s'appuie sur le moteur global exposé dans ``__main__`` par
+    ``main.py``. En mode multi-pistes, c'est le ``MixerEngine`` qui est utilisé :
+    il fournit le dry complet (tous canaux captés) et le wet final (mix des
+    bus). Retourne ``None`` si aucun moteur n'est disponible.
     """
     global _analyzer
 
     with _analyzer_lock:
         if _analyzer is None:
             main = sys.modules.get("__main__")
-            inputs = main.__dict__.get("inputs", []) if main is not None else []
-            if not inputs:
+            if main is None:
                 return None
-            _analyzer = AudioAnalyzer(inputs[0], open_capture=False)
+            stream = main.__dict__.get("stream")
+            if stream is None:
+                inputs = main.__dict__.get("inputs", [])
+                stream = inputs[0] if inputs else None
+            if stream is None:
+                return None
+            _analyzer = AudioAnalyzer(stream, open_capture=False)
         analyzer = _analyzer
 
     if not analyzer.running and analyzer.error is None:

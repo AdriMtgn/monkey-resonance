@@ -44,6 +44,13 @@ COPY requirements.txt /base_app/requirements.txt
 # ensures uv's environment is used.
 RUN uv pip install -r /base_app/requirements.txt
 
+# Outils d'analyse audio hors-ligne (scripts/analyze_loops.py,
+# remove_silence.py, cut_loop.py) :beat tracking librosa, scipy, soundfile.
+# Copie séparée pour que la couche reste en cache tant que ce fichier ne
+# change pas.
+COPY requirements-analysis.txt /base_app/requirements-analysis.txt
+RUN uv pip install -r /base_app/requirements-analysis.txt
+
 
 # --- Non-root user -----------------------------------------------------------
 # Create a dedicated user aligned with the host user (uid 1000 by default) so

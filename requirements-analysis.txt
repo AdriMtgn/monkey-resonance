@@ -1,0 +1,12 @@
+# Dépendances d'analyse audio hors-ligne (scripts/analyze_loops.py,
+# scripts/remove_silence.py, scripts/cut_loop.py).
+#
+# Elles sont installées dans l'image de base via le Dockerfile, afin que les
+# scripts tournent dans le conteneur sans venv temporaire.
+#
+# Versions épinglées : ce sont celles validées sur la prise du 2026-11-07
+# (beat tracking, détection de sections, découpe). Mettre à jour
+# volontairement, puis relancer l'analyse sur un WAV connu avant de valider.
+librosa==1.0.0
+scipy==1.18.1
+soundfile==0.14.0
