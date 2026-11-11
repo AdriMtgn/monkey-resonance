@@ -22,4 +22,10 @@ services:
       # worktrees run side by side; scripts/check-ports.sh frees the port
       # before launch.
       - ${MKR_PORT:-8005}:8005
+    environment:
+      # Transmis au container depuis l'environnement hôte ou .env.
+      MKR_MIDI: ${MKR_MIDI:-1}
+      MKR_MIDI_CONFIG: ${MKR_MIDI_CONFIG:-}
+      MKR_MIDI_MAP: ${MKR_MIDI_MAP:-}
+      MKR_START_PRESET: ${MKR_START_PRESET:-}
     command: ["python", "-i", "main.py"]

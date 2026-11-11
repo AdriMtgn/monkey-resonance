@@ -2,8 +2,9 @@ import os
 
 APP_BASE_FOLDER = "/monkey-resonance"
 APP_FOLDERS = {
-    "RECORDS":"records",
-    "SAVED_EFFECTS":"saved_effects",
+    "RECORDS": "records",
+    "SAVED_EFFECTS": "saved_effects",
+    "SAVED_MIDI_MAPS": "saved_midi_maps",
 }
 
 def _check_and_create_app_folders(base_path):

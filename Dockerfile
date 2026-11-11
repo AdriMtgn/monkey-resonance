@@ -62,12 +62,13 @@ RUN groupadd -g 29 audio 2>/dev/null || true \
 # Copy application code and scripts
 COPY app /base_app/app
 COPY scripts /base_app/scripts
+COPY triggers.example.json /base_app/triggers.example.json
 
 # Set working directory
 WORKDIR /base_app/app
 
 # Data folders + app + venv + uv python owned by the non-root user (GID 1000 is already correct)
-RUN mkdir -p /monkey-resonance/records /monkey-resonance/saved_effects \
+RUN mkdir -p /monkey-resonance/records /monkey-resonance/saved_effects /monkey-resonance/saved_midi_maps \
     && chown -R mkr /monkey-resonance /base_app /opt/venv /opt/uv-python
 
 # Drop privileges

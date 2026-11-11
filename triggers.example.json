@@ -1,0 +1,67 @@
+{
+    "name": "bass_board",
+    "device": "AudioBox",
+    "channel": 0,
+    "debounce_ms": 150,
+    "input_index": 0,
+    "startup_preset": "bass_clear_warm_punch",
+    "order": [
+        "bass_clear_warm_punch",
+        "bass_mid_growl",
+        "baleine_v1_profonde",
+        "baleine_v2_chantante",
+        "baleine_v3_sous_leau"
+    ],
+    "bindings": [
+        {
+            "id": "pc0",
+            "source": {"type": "program_change", "number": 0},
+            "action": {"type": "preset", "target": "bass_clear_warm_punch"}
+        },
+        {
+            "id": "pc1",
+            "source": {"type": "program_change", "number": 1},
+            "action": {"type": "preset", "target": "bass_mid_growl"}
+        },
+        {
+            "id": "pc2",
+            "source": {"type": "program_change", "number": 2},
+            "action": {"type": "preset", "target": "baleine_v1_profonde"}
+        },
+        {
+            "id": "cc21",
+            "source": {"type": "control_change", "controller": 21, "mode": "press"},
+            "action": {"type": "next_preset"}
+        },
+        {
+            "id": "cc22",
+            "source": {"type": "control_change", "controller": 22, "mode": "press"},
+            "action": {"type": "previous_preset"}
+        },
+        {
+            "id": "cc23",
+            "source": {"type": "control_change", "controller": 23, "mode": "toggle"},
+            "action": {"type": "toggle_effect", "target": "pedalboard.Compressor"}
+        },
+        {
+            "id": "cc7",
+            "source": {"type": "control_change", "controller": 7, "mode": "value"},
+            "action": {"type": "set_input_volume"}
+        },
+        {
+            "id": "pad36",
+            "source": {"type": "note_on", "number": 36},
+            "action": {"type": "loop_toggle"}
+        },
+        {
+            "id": "pad38",
+            "source": {"type": "note_on", "number": 38},
+            "action": {"type": "mute_input"}
+        },
+        {
+            "id": "pad39",
+            "source": {"type": "note_on", "number": 39},
+            "action": {"type": "unmute_input"}
+        }
+    ]
+}
