@@ -78,6 +78,82 @@ class AudioDeviceError(RuntimeError):
     """Erreur d'ouverture ou d'accès au périphérique audio."""
 
 
+def open_device_pair(
+    *,
+    input_device: str | int | None,
+    output_device: str | int | None,
+    sample_rate: int,
+    capture_block: int,
+    buffer_size: int,
+    num_input_channels: int,
+    num_output_channels: int,
+) -> tuple[PedalboardAudioStream, PedalboardAudioStream]:
+    """Ouvre la paire capture/lecture Pedalboard (avec quelques tentatives).
+
+    La capture et la lecture sont deux streams séparés : Pedalboard n'écrit
+    pas dans le callback d'un stream duplex. La fonction est partagée par le
+    moteur mono-piste historique et par le moteur multi-pistes (``MixerEngine``)
+    afin de garder exactement la même stratégie d'ouverture et de retry.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_OPEN_ATTEMPTS + 1):
+        capture: PedalboardAudioStream | None = None
+        playback: PedalboardAudioStream | None = None
+        try:
+            capture = PedalboardAudioStream(
+                input_device_name=input_device,
+                output_device_name=None,
+                plugins=None,
+                sample_rate=sample_rate,
+                buffer_size=capture_block,
+                num_input_channels=num_input_channels,
+                num_output_channels=0,
+            )
+            capture.ignore_dropped_input = True
+            playback = PedalboardAudioStream(
+                input_device_name=None,
+                output_device_name=output_device,
+                plugins=None,
+                sample_rate=sample_rate,
+                buffer_size=buffer_size,
+                num_input_channels=0,
+                num_output_channels=num_output_channels,
+            )
+            logger.info(
+                "Périphériques ouverts : in=%r (bloc %s) out=%r (bloc %s) sr=%s",
+                input_device,
+                capture_block,
+                output_device,
+                buffer_size,
+                sample_rate,
+            )
+            return capture, playback
+        except (RuntimeError, ValueError, OSError) as exc:
+            last_error = exc
+            for stream in (capture, playback):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except (RuntimeError, ValueError, OSError):
+                        logger.debug("Fermeture partielle échouée", exc_info=True)
+            logger.warning(
+                "Ouverture audio échouée (tentative %s/%s) : %s",
+                attempt,
+                MAX_OPEN_ATTEMPTS,
+                exc,
+            )
+            if attempt < MAX_OPEN_ATTEMPTS:
+                time.sleep(OPEN_RETRY_DELAY_S)
+
+    available = ", ".join(PedalboardAudioStream.input_device_names)
+    raise AudioDeviceError(
+        "Impossible d'ouvrir le périphérique audio "
+        f"in={input_device!r} out={output_device!r}. "
+        "Vérifie qu'aucun autre process (ancien container pyo, DAW, "
+        f"PipeWire...) ne tient la carte. Entrées disponibles : {available}"
+    ) from last_error
+
+
 class LoopPlayback:
     """Lecture d'un WAV (éventuellement bouclé) mixé avec le signal live.
 
@@ -167,12 +243,29 @@ class AudioStream:
         num_output_channels: int = 2,
         *,
         record_device: str | int | None = None,
+        input_channels: tuple[int, ...] | None = None,
+        managed: bool = False,
+        name: str | None = None,
         global_volume: float = 1.0,
         allow_feedback: bool = False,
         start_muted: bool = False,
         open_device: bool = True,
     ) -> None:
-        self.input_channel = input_channel
+        # ``input_channels`` est la liste des canaux de capture traités par
+        # cette piste. En mode ``managed`` (MixerEngine), une piste est un
+        # sous-ensemble du flux capté (1 ou 2 canaux) et ne possède pas ses
+        # propres périphériques : le moteur partagé s'en charge.
+        self.input_channels = (
+            tuple(int(channel) for channel in input_channels)
+            if input_channels is not None
+            else tuple(range(int(num_input_channels)))
+        )
+        if not self.input_channels:
+            raise ValueError("input_channels ne peut pas être vide")
+        self.input_channel = int(input_channel)
+        if self.input_channel not in self.input_channels:
+            self.input_channel = self.input_channels[0]
+        self.name = name or f"input_{self.input_channel}"
         self.input_device = input_device
         self.output_device = output_device
         # Conservé pour compatibilité : l'enregistrement est désormais alimenté
@@ -183,9 +276,11 @@ class AudioStream:
         # Même taille que le buffer de sortie : la latence ajoutée par le
         # traitement est d'un bloc de capture + un bloc de lecture.
         self._capture_block = max(int(buffer_size), CAPTURE_BLOCK_MIN)
-        self.num_input_channels = num_input_channels
+        self.num_input_channels = len(self.input_channels)
         self.num_output_channels = num_output_channels
         self.allow_feedback = allow_feedback
+        self._managed = bool(managed)
+        self._engine: Any | None = None
 
         self._lock = threading.RLock()
         # Verrou dédié à l'enregistrement : ouvrir/fermer une capture prend
@@ -201,7 +296,7 @@ class AudioStream:
         self._playback: PedalboardAudioStream | None = None
         self._audio_thread: threading.Thread | None = None
         self._running = False
-        self._last_input = np.empty((num_input_channels, 0), dtype=np.float32)
+        self._last_input = np.empty((self.num_input_channels, 0), dtype=np.float32)
         self._frames_read = 0
         self._clock_start = 0.0
 
@@ -227,72 +322,16 @@ class AudioStream:
     # ------------------------------------------------------------------
     # Device / stream lifecycle
     # ------------------------------------------------------------------
-    def _open_capture(self) -> PedalboardAudioStream:
-        return PedalboardAudioStream(
-            input_device_name=self.input_device,
-            output_device_name=None,
-            plugins=None,
+    def _open_device(self) -> None:
+        self._capture, self._playback = open_device_pair(
+            input_device=self.input_device,
+            output_device=self.output_device,
             sample_rate=self._sample_rate,
-            buffer_size=self._capture_block,
-            num_input_channels=self.num_input_channels,
-            num_output_channels=0,
-        )
-
-    def _open_playback(self) -> PedalboardAudioStream:
-        return PedalboardAudioStream(
-            input_device_name=None,
-            output_device_name=self.output_device,
-            plugins=None,
-            sample_rate=self._sample_rate,
+            capture_block=self._capture_block,
             buffer_size=self._buffer_size,
-            num_input_channels=0,
+            num_input_channels=self.num_input_channels,
             num_output_channels=self.num_output_channels,
         )
-
-    def _open_device(self) -> None:
-        last_error: Exception | None = None
-        for attempt in range(1, MAX_OPEN_ATTEMPTS + 1):
-            try:
-                capture = self._open_capture()
-                capture.ignore_dropped_input = True
-                playback = self._open_playback()
-                self._capture = capture
-                self._playback = playback
-                logger.info(
-                    "Périphériques ouverts : in=%r (bloc %s) out=%r (bloc %s) sr=%s",
-                    self.input_device,
-                    self._capture_block,
-                    self.output_device,
-                    self._buffer_size,
-                    self._sample_rate,
-                )
-                return
-            except (RuntimeError, ValueError, OSError) as exc:
-                last_error = exc
-                for stream in (self._capture, self._playback):
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except (RuntimeError, ValueError, OSError):
-                            logger.debug("Fermeture partielle échouée", exc_info=True)
-                self._capture = None
-                self._playback = None
-                logger.warning(
-                    "Ouverture audio échouée (tentative %s/%s) : %s",
-                    attempt,
-                    MAX_OPEN_ATTEMPTS,
-                    exc,
-                )
-                if attempt < MAX_OPEN_ATTEMPTS:
-                    time.sleep(OPEN_RETRY_DELAY_S)
-
-        available = ", ".join(PedalboardAudioStream.input_device_names)
-        raise AudioDeviceError(
-            "Impossible d'ouvrir le périphérique audio "
-            f"in={self.input_device!r} out={self.output_device!r}. "
-            "Vérifie qu'aucun autre process (ancien container pyo, DAW, "
-            f"PipeWire...) ne tient la carte. Entrées disponibles : {available}"
-        ) from last_error
 
     def start(self, *, unmute: bool = True) -> None:
         """Démarre le stream (ou le relance).
@@ -301,27 +340,34 @@ class AudioStream:
         court instant de sortie audible (click/larsen) au lancement.
         """
         with self._lock:
-            if self._capture is None or self._playback is None:
-                self._open_device()
-            if not self._running:
-                self._capture.__enter__()
-                try:
-                    self._playback.__enter__()
-                except (RuntimeError, ValueError, OSError):
-                    try:
-                        self._capture.__exit__(None, None, None)
-                    except (RuntimeError, ValueError, OSError):
-                        logger.exception("Fermeture de la capture après échec")
-                    raise
-                self._running = True
-                self._frames_read = 0
-                self._clock_start = time.monotonic()
-                self._audio_thread = threading.Thread(
-                    target=self._audio_loop,
-                    name="pedalboard-audio",
-                    daemon=True,
+            if self._managed:
+                # Piste gérée par un MixerEngine : les périphériques et le
+                # thread audio appartiennent au moteur partagé.
+                self._running = bool(
+                    self._engine is not None and self._engine.is_running
                 )
-                self._audio_thread.start()
+            else:
+                if self._capture is None or self._playback is None:
+                    self._open_device()
+                if not self._running:
+                    self._capture.__enter__()
+                    try:
+                        self._playback.__enter__()
+                    except (RuntimeError, ValueError, OSError):
+                        try:
+                            self._capture.__exit__(None, None, None)
+                        except (RuntimeError, ValueError, OSError):
+                            logger.exception("Fermeture de la capture après échec")
+                        raise
+                    self._running = True
+                    self._frames_read = 0
+                    self._clock_start = time.monotonic()
+                    self._audio_thread = threading.Thread(
+                        target=self._audio_loop,
+                        name="pedalboard-audio",
+                        daemon=True,
+                    )
+                    self._audio_thread.start()
             if unmute:
                 self._muted = False
             self._apply_gain()
@@ -336,6 +382,14 @@ class AudioStream:
         """Arrête les streams et ferme les périphériques audio."""
         if self.recording:
             self.stop_recording()
+        if self._managed:
+            # Les périphériques appartiennent au MixerEngine : ne pas les
+            # fermer ici, seulement arrêter la contribution de la piste.
+            with self._lock:
+                self._running = False
+                self._loop = None
+                self._loop_finished = None
+            return
         with self._lock:
             self._running = False
             thread = self._audio_thread
@@ -406,15 +460,28 @@ class AudioStream:
     def _process_block(
         self, segment: np.ndarray, playback: PedalboardAudioStream
     ) -> None:
+        """Traite un bloc et l'écrit sur le stream de sortie (mode autonome)."""
+        playback.write(self.process_segment(segment), self.sample_rate)
+
+    def process_segment(self, segment: np.ndarray) -> np.ndarray:
+        """Traite un bloc de cette piste et retourne le signal de sortie.
+
+        C'est le point d'entrée utilisé par ``MixerEngine`` : la piste ne
+        touche ni au périphérique ni au thread audio. Le signal retourné est
+        au format du flux de sortie de la piste (stéréo par défaut), boucle
+        incluse, mais **avant** le mixage global (balance, routage, bus).
+        """
         with self._lock:
             board = self._board
             loop = self._loop
             muted = self._muted
+            volume = self._volume
 
         wet = np.asarray(board.process(segment, self.sample_rate, reset=False))
         wet = np.asarray(wet, dtype=np.float32)
-        if wet.shape[0] == 1 and self.num_output_channels > 1:
-            wet = np.repeat(wet, self.num_output_channels, axis=0)
+        if wet.ndim == 1:
+            wet = wet[np.newaxis, :]
+        wet = self._to_output_channels(wet)
 
         # Enregistrement et analyse sont alimentés ici, sans capture
         # secondaire (la carte est ouverte en exclusif). ``put_nowait`` ne
@@ -440,14 +507,69 @@ class AudioStream:
             if extra is not None and not muted:
                 if extra.shape != wet.shape:
                     extra = np.resize(extra, wet.shape)
-                mixed = wet + extra
+                # Le fader de la piste (global_volume) s'applique aussi à la
+                # boucle, qui est mixée après la chaîne d'effets.
+                mixed = wet + extra * volume
                 peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
                 if peak > MIX_CEILING:
                     mixed = mixed * (MIX_CEILING / peak)
             if loop.finished:
                 self._finish_loop(loop)
 
-        playback.write(mixed, self.sample_rate)
+        return mixed
+
+    def _to_output_channels(self, wet: np.ndarray) -> np.ndarray:
+        """Adapte le signal traité au nombre de canaux de sortie de la piste.
+
+        En mode ``managed``, une piste expose toujours une paire stéréo : le
+        mixer a besoin de gauche/droite pour appliquer balance et gains. En
+        mode autonome, on conserve le comportement historique (mono vers N
+        canaux, stéréo conservé).
+        """
+        channels = self.num_output_channels
+        if wet.shape[0] == channels:
+            return wet
+        if wet.shape[0] == 1:
+            return np.repeat(wet, channels, axis=0)
+        if wet.shape[0] > channels:
+            return wet[:channels]
+        # wet a 2 canaux et la sortie en demande davantage : duplication.
+        repeats = (channels + wet.shape[0] - 1) // wet.shape[0]
+        return np.vstack([wet] * repeats)[:channels]
+
+    def extract(self, segment: np.ndarray) -> np.ndarray:
+        """Extrait de ``segment`` les canaux de capture de cette piste."""
+        channels = self.input_channels
+        if not channels:
+            return segment
+        if segment.shape[0] <= max(channels):
+            raise ValueError(
+                f"La piste {self.name!r} attend les canaux {channels}, "
+                f"mais le bloc n'en contient que {segment.shape[0]}"
+            )
+        return segment[list(channels), :]
+
+    def attach_engine(self, engine: Any) -> None:
+        """Rattache la piste à un ``MixerEngine`` (mode partagé)."""
+        self._engine = engine
+        self._managed = True
+        self._sample_rate = engine.sample_rate
+        self._buffer_size = engine.buffer_size
+        self._capture_block = engine.capture_block_size
+
+    def set_input_channels(self, channels: tuple[int, ...]) -> None:
+        """Change les canaux de capture traités par la piste."""
+        if not channels:
+            raise ValueError("channels ne peut pas être vide")
+        if self.recording:
+            raise RuntimeError(
+                "Impossible de changer les canaux pendant un enregistrement"
+            )
+        with self._lock:
+            self.input_channels = tuple(int(channel) for channel in channels)
+            self.input_channel = self.input_channels[0]
+            self.num_input_channels = len(self.input_channels)
+            self._rebuild_board()
 
     def _finish_loop(self, loop: LoopPlayback) -> None:
         with self._lock:
@@ -600,7 +722,12 @@ class AudioStream:
         return [slot.descriptor() for slot in self._slots]
 
     def _rebuild_board(self) -> None:
-        plugins = [plugin for slot in self._slots for plugin in slot.plugins]
+        plugins = [
+            plugin
+            for slot in self._slots
+            if slot.enabled
+            for plugin in slot.plugins
+        ]
         plugins.append(self._output_gain)
         self._board = Pedalboard(plugins)
 
@@ -662,6 +789,52 @@ class AudioStream:
                 slot.params,
             )
 
+    def set_effect_enabled(self, position: int, enabled: bool) -> dict[str, Any]:
+        """Active ou bypass l'effet à ``position`` sans le retirer de la chaîne."""
+        with self._lock:
+            if position < 0 or position >= len(self._slots):
+                raise IndexError("Invalid position, no effect at this index.")
+            slot = self._slots[position]
+            slot.enabled = bool(enabled)
+            self._rebuild_board()
+            logger.info(
+                "Effet %s à la position %s : %s",
+                "activé" if slot.enabled else "bypassé",
+                position,
+                slot.path,
+            )
+            return {"position": position, **slot.descriptor()}
+
+    def toggle_effect(self, position: int) -> dict[str, Any]:
+        """Inverse l'état actif/bypass de l'effet à ``position``."""
+        with self._lock:
+            if position < 0 or position >= len(self._slots):
+                raise IndexError("Invalid position, no effect at this index.")
+            return self.set_effect_enabled(
+                position,
+                not self._slots[position].enabled,
+            )
+
+    def effect_positions(self, effect: str | int | None = None) -> list[int]:
+        """Retourne les positions correspondant à un chemin ou un index.
+
+        ``None`` retourne toutes les positions. Un chemin peut correspondre à
+        plusieurs effets identiques dans la chaîne ; l'appelant décide alors
+        s'il agit sur le premier ou sur tous.
+        """
+        with self._lock:
+            if effect is None:
+                return list(range(len(self._slots)))
+            if isinstance(effect, int):
+                if effect < 0 or effect >= len(self._slots):
+                    raise IndexError("Invalid position, no effect at this index.")
+                return [effect]
+            return [
+                index
+                for index, slot in enumerate(self._slots)
+                if slot.path == effect
+            ]
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -705,6 +878,7 @@ class AudioStream:
             EffectSlot.create(
                 str(effect_infos["effect"]),
                 effect_infos.get("params", {}),
+                enabled=bool(effect_infos.get("enabled", True)),
             )
             for effect_infos in chain
         ]
@@ -857,8 +1031,8 @@ class AudioStream:
     def __str__(self) -> str:
         state = "running" if self.is_running else "stopped"
         return (
-            f"AudioStream(input={self.input_device!r}, "
-            f"output={self.output_device!r}, "
+            f"AudioStream(name={self.name!r}, channels={self.input_channels}, "
+            f"input={self.input_device!r}, output={self.output_device!r}, "
             f"sample_rate={self.sample_rate:g}, buffer_size={self.buffer_size}, "
             f"effects={len(self._slots)}, {state})"
         )

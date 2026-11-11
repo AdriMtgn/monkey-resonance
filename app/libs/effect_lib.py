@@ -74,21 +74,35 @@ class EffectSlot:
     path: str
     params: Params
     plugins: PluginList
+    # ``False`` = bypass : les plugins restent construits (donc un réactiver
+    # est immédiat) mais ne sont pas inclus dans le Pedalboard traité.
+    enabled: bool = True
 
     @classmethod
-    def create(cls, path: str, params: Params | None = None) -> EffectSlot:
+    def create(
+        cls,
+        path: str,
+        params: Params | None = None,
+        *,
+        enabled: bool = True,
+    ) -> EffectSlot:
         clean_params = dict(params or {})
         return cls(
             path=path,
             params=clean_params,
             plugins=build_plugins(path, clean_params),
+            enabled=bool(enabled),
         )
 
     def rebuild(self) -> None:
         self.plugins = build_plugins(self.path, self.params)
 
     def descriptor(self) -> dict[str, object]:
-        return {"effect": self.path, "params": dict(self.params)}
+        return {
+            "effect": self.path,
+            "params": dict(self.params),
+            "enabled": self.enabled,
+        }
 
 
 def _float_param(params: Params, name: str, default: float) -> float:

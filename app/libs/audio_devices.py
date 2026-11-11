@@ -40,7 +40,13 @@ class AudioConfig:
     output_channels: int = 2
     start_muted: bool = False
     global_volume: float = 1.0
+    master_volume: float = 1.0
     allow_feedback: bool = False
+    # Configuration du mixer multi-pistes (voir libs/mixer.py).
+    # AUDIO_INPUTS  : "nom:canal[,canal][;...]" (défaut : une piste mono/canal)
+    # AUDIO_OUTPUTS : "nom:gauche[,droite][;...]" (défaut : un bus main 0/1)
+    input_layout: str = ""
+    output_layout: str = ""
 
     @property
     def buffer_latency_ms(self) -> float:
@@ -262,7 +268,9 @@ def load_config() -> AudioConfig:
       AUDIO_INPUT_CHANNELS / AUDIO_OUTPUT_CHANNELS (défaut 2)
       AUDIO_START_MUTED (défaut 0)
       AUDIO_GLOBAL_VOLUME (défaut 1.0)
+      AUDIO_MASTER_VOLUME (défaut 1.0)
       AUDIO_ALLOW_FEEDBACK (défaut 0)
+      AUDIO_INPUTS / AUDIO_OUTPUTS (mixer multi-pistes, voir libs/mixer.py)
     """
     inputs, outputs = list_devices()
 
@@ -281,6 +289,7 @@ def load_config() -> AudioConfig:
         else input_device
     )
 
+    global_volume = float(os.environ.get("AUDIO_GLOBAL_VOLUME", "1.0"))
     return AudioConfig(
         input_device=input_device,
         output_device=output_device,
@@ -290,6 +299,12 @@ def load_config() -> AudioConfig:
         input_channels=int(os.environ.get("AUDIO_INPUT_CHANNELS", "2")),
         output_channels=int(os.environ.get("AUDIO_OUTPUT_CHANNELS", "2")),
         start_muted=_env_bool("AUDIO_START_MUTED", False),
-        global_volume=float(os.environ.get("AUDIO_GLOBAL_VOLUME", "1.0")),
+        # AUDIO_GLOBAL_VOLUME reste l'alias historique du master.
+        global_volume=global_volume,
+        master_volume=float(
+            os.environ.get("AUDIO_MASTER_VOLUME", str(global_volume))
+        ),
         allow_feedback=_env_bool("AUDIO_ALLOW_FEEDBACK", False),
+        input_layout=os.environ.get("AUDIO_INPUTS", ""),
+        output_layout=os.environ.get("AUDIO_OUTPUTS", ""),
     )

@@ -80,8 +80,19 @@ def test_load_legacy_list_format(engine, tmp_path, monkeypatch):
     (tmp_path / "legacy.json").write_text(json.dumps(legacy), encoding="utf-8")
 
     engine.load_effects("legacy")
-    assert engine.effects_chain == legacy
+    assert engine.effects_chain == [
+        {**legacy[0], "enabled": True},
+    ]
     assert engine.global_volume == pytest.approx(1.0)
+
+
+def test_effect_bypass_is_not_processed(engine):
+    engine.add_effect(None, "pedalboard.Gain", gain_db=-3)
+    engine.set_effect_enabled(0, False)
+    assert engine.effects_chain[0]["enabled"] is False
+    assert len(engine._board) == 1  # gain de sortie uniquement
+    engine.set_effect_enabled(0, True)
+    assert len(engine._board) == 2
 
 
 def test_load_unknown_effect_keeps_previous_chain(engine, tmp_path, monkeypatch):

@@ -89,6 +89,7 @@ def test_effect_slot_roundtrip_and_processing():
     slot = EffectSlot.create("pyo.lib.effects.Disto", {"drive": 0.5, "mul": 0.7})
     assert slot.descriptor()["effect"] == "pyo.lib.effects.Disto"
     assert slot.descriptor()["params"]["drive"] == 0.5
+    assert slot.descriptor()["enabled"] is True
     assert len(slot.plugins) == 2
 
     audio = np.zeros((2, 4800), dtype=np.float32)
