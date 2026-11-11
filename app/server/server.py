@@ -14,6 +14,9 @@ try:
 except ImportError:  # pragma: no cover - dépendances optionnelles
     _analyzer_available = False
 
+from libs.midi_control import list_midi_devices as midi_devices_list
+from libs.mixer import mixer_from_main
+from libs.performance import MidiEvent
 from libs.utils import APP_BASE_FOLDER, APP_FOLDERS
 
 logger = logging.getLogger(__name__)
@@ -98,8 +101,11 @@ async def list_inputs( ) -> list:
         try:
             result.append({
                 "index": i,
+                "name": getattr(inp, "name", f"input_{i}"),
+                "channels": list(getattr(inp, "input_channels", ())),
                 "repr": str(inp),
                 "recording": bool(getattr(inp, "recording", False)),
+                "volume": round(float(getattr(inp, "global_volume", 1.0)), 4),
                 "effects": getattr(inp, "effects_chain", []),
             })
         except Exception as e:
@@ -504,30 +510,555 @@ async def playback_status(index: int) -> dict:
 
 
 # ----------------------------------------------------------------------
+# Performance : presets, bypass, looper et mappings MIDI
+# ----------------------------------------------------------------------
+def _performance_controller():
+    """Retourne ``(contrôleur, erreur)`` depuis ``__main__``."""
+    main = sys.modules.get("__main__")
+    if main is None:
+        return None, {"error": "__main__ not available"}
+    controller = main.__dict__.get("performance")
+    if controller is None:
+        return None, {"error": "performance controller not initialized"}
+    return controller, None
+
+
+@mcp.tool()
+async def list_presets() -> dict:
+    """Liste les presets d'effets disponibles et le preset courant."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return {
+        "presets": controller.list_presets(),
+        "order": controller.preset_order(),
+        "current": controller.current_preset,
+    }
+
+
+@mcp.tool()
+async def load_preset(name: str) -> dict:
+    """Charge un preset d'effets par son nom (fichier ``saved_effects/<name>.json``)."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.apply_preset(name)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def next_preset() -> dict:
+    """Charge le preset suivant dans l'ordre de performance configuré."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.next_preset()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def previous_preset() -> dict:
+    """Charge le preset précédent dans l'ordre de performance configuré."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.previous_preset()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def performance_status() -> dict:
+    """État complet : preset, mapping MIDI, dernier événement, looper."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.status()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def toggle_effect(
+    target: str | int,
+    input_index: int | None = None,
+) -> dict:
+    """Active ou bypass un effet ciblé (position ou chemin ``pedalboard.*``)."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.toggle_effect(target, input_index=input_index)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def set_effect_enabled(
+    target: str | int,
+    enabled: bool,
+    input_index: int | None = None,
+) -> dict:
+    """Force l'état actif/bypass d'un effet ciblé."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.set_effect_enabled(
+            target,
+            enabled,
+            input_index=input_index,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def loop_toggle(input_index: int | None = None) -> dict:
+    """Un seul pad : enregistrer, puis lire en boucle, puis arrêter."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.loop_toggle(input_index=input_index)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def loop_record(input_index: int | None = None) -> dict:
+    """Démarre un enregistrement de boucle sur la piste ciblée."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.loop_record(input_index=input_index)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def loop_play(input_index: int | None = None) -> dict:
+    """Joue le dernier enregistrement connu en boucle."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.loop_play(input_index=input_index)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def loop_stop(input_index: int | None = None) -> dict:
+    """Arrête la boucle en cours."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.loop_stop(input_index=input_index)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def list_midi_devices() -> dict:
+    """Liste les devices raw MIDI visibles dans le container."""
+    return {"devices": midi_devices_list()}
+
+
+@mcp.tool()
+async def get_midi_status() -> dict:
+    """État de la connexion MIDI, dernier message et mode apprentissage."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return {
+        "midi": controller.midi_status(),
+        "last_event": controller.last_event(),
+        "last_action": controller.last_action(),
+        "learn": controller.learn_status(),
+    }
+
+
+@mcp.tool()
+async def list_midi_maps() -> dict:
+    """Liste les profils de mapping sauvegardés."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return {"maps": controller.list_mappings()}
+
+
+@mcp.tool()
+async def get_midi_map() -> dict:
+    """Retourne le mapping MIDI actif."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return {"mapping": controller.get_mapping_dict()}
+
+
+@mcp.tool()
+async def configure_midi_map(changes: dict) -> dict:
+    """Met à jour les métadonnées du mapping actif.
+
+    Exemple : ``{"order": ["clean", "space"], "startup_preset": "clean",
+    "input_index": 0, "device": "AudioBox", "channel": 0}``. Les clés absentes
+    restent inchangées ; les bindings peuvent aussi être remplacés via
+    ``{"bindings": [...]}``.
+    """
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.configure_mapping(changes)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def save_midi_map(name: str) -> dict:
+    """Sauvegarde le mapping actif dans ``saved_midi_maps/<name>.json``."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.save_mapping(name)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def load_midi_map(name: str) -> dict:
+    """Charge un profil de mapping sauvegardé."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.load_mapping(name)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def add_midi_binding(
+    source: dict,
+    action: dict,
+    binding_id: str | None = None,
+) -> dict:
+    """Ajoute une association MIDI -> action.
+
+    ``source`` : ``{"type": "control_change", "controller": 21, "mode": "press"}``.
+    ``action`` : ``{"type": "next_preset"}``, ``{"type": "preset",
+    "target": "bass_mid_growl"}``, ``{"type": "toggle_effect", "target":
+    "pedalboard.Delay"}``, ``{"type": "loop_toggle"}``, etc.
+    """
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.add_binding(source, action, binding_id=binding_id)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def update_midi_binding(
+    binding_id: str,
+    source: dict | None = None,
+    action: dict | None = None,
+) -> dict:
+    """Modifie la source ou l'action d'une association existante."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.update_binding(binding_id, source=source, action=action)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def remove_midi_binding(binding_id: str) -> dict:
+    """Supprime une association MIDI."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.remove_binding(binding_id)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def simulate_midi_event(event: dict) -> dict:
+    """Injecte un événement MIDI pour tester le mapping sans matériel.
+
+    Exemple : ``{"type": "control_change", "channel": 0, "controller": 21,
+    "value": 127}``.
+    """
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    try:
+        return controller.dispatch_event(MidiEvent.from_dict(event))
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def start_midi_learn() -> dict:
+    """Démarre l'apprentissage : le prochain message MIDI est capturé sans être exécuté."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return controller.start_learn()
+
+
+@mcp.tool()
+async def stop_midi_learn() -> dict:
+    """Arrête l'apprentissage et retourne le message capturé."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return controller.stop_learn()
+
+
+@mcp.tool()
+async def get_midi_learn() -> dict:
+    """État du mode apprentissage MIDI."""
+    controller, error = _performance_controller()
+    if error is not None:
+        return error
+    return controller.learn_status()
+
+
+# ----------------------------------------------------------------------
 # Volume / analyse musicale
 # ----------------------------------------------------------------------
 @mcp.tool()
 async def set_output_volume(index: int, volume: float) -> dict:
-    """Set the output volume (0.0 = mute, 1.0 = normal).
+    """Set the volume of an output bus (0.0 = mute, 1.0 = normal).
 
-    ``index`` is kept for API compatibility (0 = left, 1 = right). Pedalboard
-    applies a single gain to the stereo stream, so both channels are affected.
+    ``index`` is the logical output bus index (``get_mixer`` lists them).
     """
-    main = sys.modules.get("__main__")
-    if main is None:
-        return {"error": "__main__ not available"}
-    inputs = main.__dict__.get("inputs", None)
-    if not inputs:
-        return {"error": "inputs not found"}
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
     try:
-        inp = inputs[0]
-        channels = int(getattr(inp, "num_output_channels", 2))
-        if index < 0 or index >= channels:
-            return {"error": f"Output index {index} out of range (0..{channels - 1})"}
-        inp.global_volume = max(float(volume), 0.0)
+        return {"result": "output_volume_set", **engine.set_output_volume(index, volume)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ----------------------------------------------------------------------
+# Mixer global : inputs indépendants + bus de sortie
+# ----------------------------------------------------------------------
+@mcp.tool()
+async def get_mixer() -> dict:
+    """État complet du mixer : pistes, bus, volumes, balance et routage.
+
+    ``inputs[i].routes`` donne le volume d'envoi de la piste ``i`` vers chaque
+    bus de sortie. ``outputs[j]`` décrit le bus ``j`` et ses canaux physiques.
+    """
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"mixer": engine.get_mixer_state()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def add_input(name: str, channels: list[int]) -> dict:
+    """Crée une piste indépendante sur les canaux de capture donnés.
+
+    ``channels`` contient 1 ou 2 index de canaux captés (0 = premier canal).
+    La piste est routée par défaut vers le bus 0 à 1.0, et vers les autres
+    bus à 0.0.
+    """
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"result": "input_added", **engine.add_input(name, channels)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def remove_input(index: int) -> dict:
+    """Retire la piste ``index`` du mixer (les index suivants se décalent)."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return engine.remove_input(index)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def set_input_channels(index: int, channels: list[int]) -> dict:
+    """Change les canaux de capture traités par la piste ``index``."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"result": "input_channels_set", **engine.set_input_channels(index, channels)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def set_input_mix(
+    index: int,
+    volume: float | None = None,
+    balance: float | None = None,
+    left_gain: float | None = None,
+    right_gain: float | None = None,
+) -> dict:
+    """Règle le fader, la balance et les gains gauche/droite d'une piste.
+
+    ``balance`` va de -1 (gauche) à +1 (droite), 0 = centre. ``left_gain`` et
+    ``right_gain`` sont des gains linéaires (1.0 = neutre). ``volume`` est le
+    fader global de la piste. Les paramètres omis restent inchangés.
+    """
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return engine.set_input_mix(
+            index,
+            volume=volume,
+            balance=balance,
+            left_gain=left_gain,
+            right_gain=right_gain,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def set_route(input_index: int, output_index: int, volume: float) -> dict:
+    """Règle le volume d'envoi de la piste ``input_index`` vers le bus ``output_index``."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"result": "route_set", **engine.set_route(input_index, output_index, volume)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def add_output(name: str, left_channel: int, right_channel: int | None = None) -> dict:
+    """Crée un bus de sortie stéréo mappé sur les canaux physiques donnés.
+
+    Si ``right_channel`` est omis, le bus est mono (gauche = droite).
+    """
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"result": "output_added", **engine.add_output(name, left_channel, right_channel)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def remove_output(index: int) -> dict:
+    """Retire le bus de sortie ``index`` (les index suivants se décalent)."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return engine.remove_output(index)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def set_output_channels(index: int, left_channel: int, right_channel: int | None = None) -> dict:
+    """Change le mapping physique d'un bus de sortie."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
         return {
-            "result": f"Volume set to {inp.global_volume} for output {index} (stereo)"
+            "result": "output_channels_set",
+            **engine.set_output_channels(index, left_channel, right_channel),
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def mute_output(index: int) -> dict:
+    """Mute un bus de sortie."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return engine.mute_output(index)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def unmute_output(index: int) -> dict:
+    """Unmute un bus de sortie."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return engine.unmute_output(index)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def set_master_volume(volume: float) -> dict:
+    """Règle le volume master global (après le mix des bus)."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        return {"result": "master_volume_set", **engine.set_master_volume(volume)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def mute_master() -> dict:
+    """Mute la sortie globale (master), sans toucher aux pistes."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        engine.mute()
+        return {"result": "master_muted"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def unmute_master() -> dict:
+    """Unmute la sortie globale (master)."""
+    engine, error = mixer_from_main()
+    if error is not None:
+        return error
+    try:
+        engine.unmute()
+        return {"result": "master_unmuted"}
     except Exception as e:
         return {"error": str(e)}
 

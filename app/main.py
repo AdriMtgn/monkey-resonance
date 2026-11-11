@@ -19,6 +19,9 @@ from typing import Any
 
 from libs.audio_devices import AudioConfig, list_devices, load_config
 from libs.audio_stream import AudioDeviceError, AudioStream
+from libs.midi_control import MidiListener, start_midi_listener
+from libs.mixer import MixerEngine
+from libs.performance import PerformanceController
 from libs.utils import APP_BASE_FOLDER, _check_and_create_app_folders
 
 logger = logging.getLogger(__name__)
@@ -27,7 +30,11 @@ logger = logging.getLogger(__name__)
 # sys.modules["__main__"].__dict__. Ne pas renommer ni supprimer.
 audio_devices: tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]] = ({}, {})
 inputs: list[AudioStream] = []
-stream: AudioStream | None = None
+stream: MixerEngine | None = None
+# Contrôleur partagé presets / bypass / looper / mapping MIDI. Les serveurs
+# REST et MCP le lisent dans ``sys.modules["__main__"]``.
+performance: PerformanceController | None = None
+midi_listener: MidiListener | None = None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -71,29 +78,19 @@ def _print_devices() -> None:
         print(f"  {index}: {device['name']}{marker}")
 
 
-def _start_engine(config: AudioConfig) -> AudioStream:
-    engine = AudioStream(
-        input_channel=0,
-        input_device=config.input_device,
-        output_device=config.output_device,
-        record_device=config.record_device,
-        sample_rate=config.sample_rate,
-        buffer_size=config.buffer_size,
-        num_input_channels=config.input_channels,
-        num_output_channels=config.output_channels,
-        global_volume=config.global_volume,
-        allow_feedback=config.allow_feedback,
-        start_muted=config.start_muted,
-    )
+def _start_engine(config: AudioConfig) -> MixerEngine:
+    engine = MixerEngine(config)
+    engine.master_volume = config.master_volume
     engine.start(unmute=not config.start_muted)
 
     logger.info(
-        "Moteur audio prêt : in=%r out=%r sr=%g buffer=%s effects=%s",
+        "Moteur audio prêt : in=%r out=%r sr=%g buffer=%s pistes=%s bus=%s",
         config.input_device,
         config.output_device,
         engine.sample_rate,
         engine.buffer_size,
-        len(engine.effects_chain),
+        len(engine.inputs),
+        [bus.name for bus in engine.outputs],
     )
     logger.info(
         "Enregistrement et analyse alimentés par le moteur (pas de capture secondaire)"
@@ -121,6 +118,25 @@ def _run_api() -> None:
     start_api()
 
 
+def _midi_enabled() -> bool:
+    raw = os.environ.get("MKR_MIDI", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _start_performance(engine: MixerEngine) -> tuple[PerformanceController, MidiListener | None]:
+    controller = PerformanceController(engine.inputs, engine=engine)
+    try:
+        controller.load_startup_mapping()
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("Mapping MIDI de démarrage ignoré : %s", exc)
+    controller.apply_startup_preset()
+
+    listener: MidiListener | None = None
+    if _midi_enabled():
+        listener = start_midi_listener(controller)
+    return controller, listener
+
+
 def _wait_for_shutdown() -> None:
     shutdown = Event()
 
@@ -134,7 +150,7 @@ def _wait_for_shutdown() -> None:
 
 
 def main() -> int:
-    global audio_devices, inputs, stream
+    global audio_devices, inputs, midi_listener, performance, stream
 
     _configure_logging()
     args = _parse_args()
@@ -176,8 +192,9 @@ def main() -> int:
         _print_devices()
         return 1
 
-    inputs = [stream]
+    inputs = stream.inputs
     audio_devices = list_devices()
+    performance, midi_listener = _start_performance(stream)
     atexit.register(stream.close)
 
     # Le MCP est activé par défaut (comportement de `main`) ; `--with_api`
@@ -196,6 +213,8 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.info("Interruption clavier, arrêt")
     finally:
+        if midi_listener is not None:
+            midi_listener.stop()
         if stream is not None:
             stream.close()
         logger.info("Moteur audio arrêté")
